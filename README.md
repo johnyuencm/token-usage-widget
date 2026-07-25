@@ -4,11 +4,14 @@
 
 Local always-on-top widget + browser dashboard for the AI harnesses you actually use. Runs on your machine (Windows and macOS). MIT. No account for this app.
 
+[![npm](https://img.shields.io/npm/v/token-usage-widget.svg)](https://www.npmjs.com/package/token-usage-widget)
 [![License: MIT](https://img.shields.io/badge/License-MIT-teal.svg)](./LICENSE)
 [![Node 18+](https://img.shields.io/badge/node-18%2B-brightgreen.svg)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/widget-Windows%20%7C%20macOS-0078D4.svg)](#corner-widget)
 
-**Repo:** [github.com/JYPersonal/token-usage-widget](https://github.com/JYPersonal/token-usage-widget)
+**Install:** `npm i -g token-usage-widget` → run `tuw`  
+**npm:** [npmjs.com/package/token-usage-widget](https://www.npmjs.com/package/token-usage-widget)  
+**Repo:** [github.com/johnyuencm/token-usage-widget](https://github.com/johnyuencm/token-usage-widget)
 
 ---
 
@@ -70,12 +73,19 @@ Already logged into Codex CLI and Cursor desktop? `tuw setup --defaults` is usua
 ### From source (contributors)
 
 ```bash
-git clone https://github.com/JYPersonal/token-usage-widget.git
+git clone https://github.com/johnyuencm/token-usage-widget.git
 cd token-usage-widget
 npm install
 npm run build
 npm run setup:defaults
 npm run widget:bg
+```
+
+Or link the local checkout as the global `tuw` CLI:
+
+```bash
+npm link
+tuw --help
 ```
 
 ## Who it’s for
@@ -90,7 +100,7 @@ npm run widget:bg
 | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **Corner widget** | Frameless, always-on-top, bottom-right; auto-starts the local API; revives it if the server dies; persists size     |
 | **Dashboard**     | Clean multi-provider meters with reset countdowns                                                                   |
-| **Setup Q&A**     | `npm run setup` — enable providers, paste keys only when needed                                                     |
+| **Setup Q&A**     | `tuw setup` / `npm run setup` — enable providers, paste keys only when needed                                       |
 | **Fail-closed**   | Missing creds → clear unavailable/error, not fake percentages                                                       |
 | **Auto-refresh**  | Every 60 seconds                                                                                                    |
 
@@ -158,7 +168,7 @@ If the configured `server.port` is already taken by an unrelated listener or a f
 
 ### macOS
 
-macOS 13+ on Intel and Apple Silicon. First release runs from a source checkout with dependencies installed — there is no packaged app, DMG, signing, or notarization.
+macOS 13+ on Intel and Apple Silicon. Install via npm (`tuw`) or from a source checkout — there is no separate DMG, code signing, or notarization.
 
 - **Menu bar, no Dock:** template icon; `app.dock.hide()` keeps it out of the Dock.
 - **Active display:** anchors to the bottom-right of the work area on the display nearest the pointer; reanchors on show / display changes.
@@ -171,8 +181,9 @@ macOS 13+ on Intel and Apple Silicon. First release runs from a source checkout 
 ## Dashboard & API
 
 ```bash
-npm run dev    # watch
-npm start      # one-shot → http://127.0.0.1:4321
+tuw start      # published CLI → http://127.0.0.1:4321
+npm start      # from source (tsx)
+npm run dev    # watch (from source)
 ```
 
 - `GET /api/health` → `{ status, fixture, time }`
@@ -208,7 +219,9 @@ $env:USAGE_FIXTURE='1'; $env:USAGE_FIXTURE_ALL='1'; npm start
 
 ```
 token-usage-widget/
+├── bin/           # tuw CLI (npm bin)
 ├── src/           # HTTP server, setup CLI, adapters, login launch
+├── dist/          # compiled JS (npm run build / prepublishOnly)
 ├── public/        # dashboard + widget UI
 ├── desktop/       # Electron + platform policy + server launch / revive
 ├── docs/          # demo screenshots + macOS evidence index
@@ -228,7 +241,7 @@ token-usage-widget/
 - **OpenCode Go** — no official usage API yet (cookie scrape)
 - **Claude / Kimi / Z.AI / Grok** — community / undocumented endpoints; shapes can change
 - **macOS real-hardware behavior is unverified** — CI covers automated paths; interactive Mac observations are skipped (see [evidence index](docs/macos-widget/evidence-index.md))
-- **Source-checkout only** — no packaged app, DMG, signing, or notarization
+- **No native installer** — distributed on [npm](https://www.npmjs.com/package/token-usage-widget) (`tuw`); no DMG/EXE signing or notarization
 - **No Safari/Chrome/Arc cookie extraction** — Firefox only for OpenCode Go discovery
 - **No Linux widget support**
 - Not a hosted SaaS — you run it locally
