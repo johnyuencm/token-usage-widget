@@ -145,7 +145,16 @@ function askYn(
         resolve(defaultYes);
         return;
       }
-      resolve(a === "y" || a === "yes");
+      // Accept on/off/true/false too — people type those instead of y/n.
+      if (a === "y" || a === "yes" || a === "on" || a === "true" || a === "1") {
+        resolve(true);
+        return;
+      }
+      if (a === "n" || a === "no" || a === "off" || a === "false" || a === "0") {
+        resolve(false);
+        return;
+      }
+      resolve(defaultYes);
     });
   });
 }
@@ -266,6 +275,21 @@ async function runInteractive(): Promise<void> {
     };
   }
   writeConfig(merged);
+
+  if (providers.claude) {
+    const token =
+      SECRET_BY_PROVIDER.claude?.detect() ||
+      (typeof (merged.claude as { accessToken?: string } | undefined)?.accessToken === "string"
+        ? (merged.claude as { accessToken: string }).accessToken
+        : null);
+    if (!token) {
+      // eslint-disable-next-line no-console
+      console.log(
+        "\nNote: Claude is enabled but no credentials were found.\n" +
+          "  Sign in with Claude Code (`claude auth login`), then restart the widget (`tuw`).",
+      );
+    }
+  }
 }
 
 export type SetupRunInteractive = () => Promise<void>;
