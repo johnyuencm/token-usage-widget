@@ -61,6 +61,9 @@ tuw start
 | `tuw` / `tuw widget` | Start the corner widget |
 | `tuw setup` | Interactive provider setup |
 | `tuw setup --defaults` | Enable OpenAI + Cursor only |
+| `tuw enable <provider>` | Enable one provider (secret prompt if needed) |
+| `tuw disable <provider>` | Disable one provider |
+| `tuw providers` | List provider on/off flags |
 | `tuw start` | Dashboard server only |
 | `tuw startup install` | Enable login Startup (platform-specific) |
 
@@ -100,7 +103,7 @@ tuw --help
 | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **Corner widget** | Frameless, always-on-top, bottom-right; auto-starts the local API; revives it if the server dies; persists size     |
 | **Dashboard**     | Clean multi-provider meters with reset countdowns                                                                   |
-| **Setup Q&A**     | `tuw setup` / `npm run setup` — enable providers, paste keys only when needed                                       |
+| **Setup Q&A**     | `tuw setup` / `tuw enable <id>` — enable providers, paste keys only when needed; refreshes the widget |
 | **Fail-closed**   | Missing creds → clear unavailable/error, not fake percentages                                                       |
 | **Auto-refresh**  | Every 60 seconds                                                                                                    |
 
@@ -125,6 +128,8 @@ tuw --help
 | ------------------------ | ------------------------------------------------ |
 | `tuw setup` / `npm run setup` | Interactive: enable providers + optional secrets |
 | `tuw setup --defaults` / `npm run setup:defaults` | Enable **OpenAI + Cursor** only                  |
+| `tuw enable <id>` / `tuw disable <id>` | Flip one provider without full setup; refreshes widget |
+| `tuw providers`          | List current on/off flags                        |
 | `npm run setup:all`      | Enable all provider flags (no secret prompts)    |
 
 Or copy [`config.example.json`](./config.example.json) into your user config path (see Quick start).

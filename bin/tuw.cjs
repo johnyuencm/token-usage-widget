@@ -17,6 +17,9 @@ function printHelp() {
 Commands:
   (default), widget     Start the corner widget
   setup [flags]         Configure providers (--defaults, --all)
+  enable <provider>     Enable one provider (prompt secret if needed)
+  disable <provider>    Disable one provider
+  providers             List provider on/off flags
   start                 Start the browser dashboard server
   startup <cmd>         Login startup: install | remove | status
   -h, --help            Show this help
@@ -62,6 +65,11 @@ async function main() {
 
   if (head === "setup") {
     runNode(resolveDist(path.join("cli", "setup.js")), args.slice(1));
+    return;
+  }
+
+  if (head === "enable" || head === "disable" || head === "providers") {
+    runNode(resolveDist(path.join("cli", "providers.js")), args);
     return;
   }
 
