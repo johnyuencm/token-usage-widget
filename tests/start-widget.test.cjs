@@ -149,7 +149,7 @@ test("Win32 planning delegates to the established CMD launcher from the checkout
   });
 
   assert.equal(plan.command, comSpec);
-  assert.deepEqual(plan.args, ["/d", "/s", "/c", `"${commandLauncher}"`]);
+  assert.deepEqual(plan.args, ["/d", "/s", "/c", commandLauncher]);
   assert.equal(plan.options.cwd, checkout);
   assert.equal(plan.options.detached, false);
   assert.equal(plan.options.stdio, "inherit");
@@ -193,7 +193,7 @@ test("Win32 dispatch waits for the CMD launcher and propagates its failure", asy
   const plan = {
     platform: "win32",
     command: "C:\\Windows\\System32\\cmd.exe",
-    args: ["/d", "/s", "/c", '"C:\\workspace\\scripts\\start-widget.cmd"'],
+    args: ["/d", "/s", "/c", "C:\\workspace\\scripts\\start-widget.cmd"],
     options: { cwd: "C:\\workspace", detached: false, stdio: "inherit", env: {} },
     waitForExit: true,
   };
