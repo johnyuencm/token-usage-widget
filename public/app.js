@@ -104,6 +104,20 @@ function renderWindow(parent, winId, win, providerId) {
 }
 
 function fmtBalanceRemaining(balance) {
+  if (balance.currency === "USD") {
+    const used = balance.used;
+    const total = balance.total;
+    if (
+      used !== null &&
+      used !== undefined &&
+      !Number.isNaN(Number(used)) &&
+      total !== null &&
+      total !== undefined &&
+      !Number.isNaN(Number(total))
+    ) {
+      return `$${Number(used).toFixed(2)} of $${Number(total).toFixed(2)}`;
+    }
+  }
   if (balance.remaining === null || balance.remaining === undefined || Number.isNaN(Number(balance.remaining))) {
     return "—";
   }
@@ -118,7 +132,18 @@ function renderBalance(parent, balance) {
   node.querySelector(".balance-remaining").textContent = fmtBalanceRemaining(balance);
   const unit = node.querySelector(".balance-unit");
   if (balance.currency === "USD") {
-    unit.textContent = "left";
+    const used = balance.used;
+    const total = balance.total;
+    if (
+      used !== null &&
+      used !== undefined &&
+      total !== null &&
+      total !== undefined
+    ) {
+      unit.textContent = "";
+    } else {
+      unit.textContent = "left";
+    }
   } else if (balance.currency === "credits") {
     unit.textContent = "credits left";
   } else {
@@ -212,17 +237,9 @@ function renderProvider(p) {
       Object.values(p.windows || {}).some((w) => w && w.status === "ok");
     if (showWindows) {
       for (const winId of ["five_hour", "week", "month"]) {
-        renderWindow(
-          windowsEl,
-          winId,
-          p.windows[winId] || {
-            status: "unavailable",
-            usedPercent: null,
-            remainingPercent: null,
-            reason: "missing",
-          },
-          p.provider,
-        );
+        const win = p.windows?.[winId];
+        if (!win || win.status !== "ok") continue;
+        renderWindow(windowsEl, winId, win, p.provider);
       }
     }
   }

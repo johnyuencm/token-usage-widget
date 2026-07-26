@@ -374,6 +374,42 @@ test("claude mapOAuthUsage maps five_hour + seven_day", () => {
   assert.equal(windows.month.status, "unavailable");
 });
 
+test("claude mapSpendBalance maps enterprise spend dollars", () => {
+  const balance = claudeTest.mapSpendBalance({
+    spend: {
+      enabled: true,
+      percent: 40,
+      used: { amount_minor: 364, currency: "USD", exponent: 2 },
+      limit: { amount_minor: 900, currency: "USD", exponent: 2 },
+    },
+  });
+  assert.ok(balance);
+  assert.equal(balance!.currency, "USD");
+  assert.equal(balance!.used, 3.64);
+  assert.equal(balance!.total, 9);
+  assert.equal(balance!.remaining, 5.36);
+  assert.match(balance!.label ?? "", /40%/);
+});
+
+test("claude usageFromBody prefers spend when windows are null", () => {
+  const usage = claudeTest.usageFromBody(
+    {
+      five_hour: null,
+      seven_day: null,
+      spend: {
+        enabled: true,
+        percent: 40,
+        used: { amount_minor: 364, currency: "USD", exponent: 2 },
+        limit: { amount_minor: 900, currency: "USD", exponent: 2 },
+      },
+    },
+    "2026-07-26T00:00:00.000Z",
+  );
+  assert.equal(usage.error, undefined);
+  assert.equal(usage.balance?.used, 3.64);
+  assert.equal(usage.windows.five_hour.status, "unavailable");
+});
+
 test("kimi mapUsages maps session + week array entries", () => {
   const windows = kimiTest.mapUsages({
     data: [
@@ -427,4 +463,17 @@ test("widget-compact claude shows used% windows", () => {
     },
   });
   assert.equal(line, "claude: 5h 42%, Week 61%");
+});
+
+test("widget-compact claude shows dollar spend and hides NA windows", () => {
+  const line = providerLine({
+    provider: "claude",
+    windows: {
+      five_hour: { status: "unavailable", usedPercent: null },
+      week: { status: "unavailable", usedPercent: null },
+      month: { status: "unavailable", usedPercent: null },
+    },
+    balance: { currency: "USD", used: 3.64, total: 9, remaining: 5.36 },
+  });
+  assert.equal(line, "claude: $3.64/$9.00 (40%)");
 });

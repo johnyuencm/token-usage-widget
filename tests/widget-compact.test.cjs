@@ -11,7 +11,7 @@ test("codex compact line uses remaining % (matches Codex Analytics)", () => {
       month: { status: "unavailable", usedPercent: null, remainingPercent: null },
     },
   });
-  assert.equal(line, "codex: 5h NA, Week 53%");
+  assert.equal(line, "codex: Week 53%");
 });
 
 test("cursor compact line matches dense format", () => {
@@ -38,7 +38,7 @@ test("opencode compact includes rolling/week/month when ok", () => {
   assert.equal(line, "opencode: rolling 0%, week 100%, month 50%");
 });
 
-test("opencode missing-auth shows NA lines not blunt error", () => {
+test("opencode missing-auth shows NA when nothing is ok", () => {
   const line = providerLine({
     provider: "opencode",
     error: "Set auth cookie (OPENCODE_GO_AUTH_COOKIE) to load live OpenCode Go meters.",
@@ -48,7 +48,7 @@ test("opencode missing-auth shows NA lines not blunt error", () => {
       month: { status: "unavailable", usedPercent: null },
     },
   });
-  assert.equal(line, "opencode: rolling NA, week NA");
+  assert.equal(line, "opencode: error");
 });
 
 test("openrouter compact shows dollar balance remaining", () => {
@@ -71,6 +71,19 @@ test("claude compact shows used percent windows", () => {
   assert.equal(line, "claude: 5h 42%, Week 61%");
 });
 
+test("claude compact shows dollar spend when windows are NA", () => {
+  const line = providerLine({
+    provider: "claude",
+    windows: {
+      five_hour: { status: "unavailable", usedPercent: null },
+      week: { status: "unavailable", usedPercent: null },
+      month: { status: "unavailable", usedPercent: null },
+    },
+    balance: { currency: "USD", used: 3.64, total: 9, remaining: 5.36 },
+  });
+  assert.equal(line, "claude: $3.64/$9.00 (40%)");
+});
+
 test("codex compact appends short reset per ok window", () => {
   const now = Date.parse("2026-07-20T12:00:00.000Z");
   const weekReset = new Date(now + (3 * 24 * 3600 + 5 * 3600) * 1000).toISOString();
@@ -85,7 +98,7 @@ test("codex compact appends short reset per ok window", () => {
     },
     { nowMs: now },
   );
-  assert.equal(line, "codex: 5h NA, Week 53% (3d 5h)");
+  assert.equal(line, "codex: Week 53% (3d 5h)");
 });
 
 test("cursor compact appends cycle reset countdown", () => {

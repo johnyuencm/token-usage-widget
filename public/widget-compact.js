@@ -33,14 +33,11 @@
     return fmtApi()?.formatResetWhen?.(iso) || "";
   }
 
+  /** Null when the window has nothing useful to show (skip NA bits). */
   function winPart(label, win, mode = "used", nowMs) {
-    if (!win || win.status !== "ok") {
-      return `${label} NA`;
-    }
+    if (!win || win.status !== "ok") return null;
     const raw = mode === "remaining" ? win.remainingPercent : win.usedPercent;
-    if (raw === null || raw === undefined || Number.isNaN(Number(raw))) {
-      return `${label} NA`;
-    }
+    if (raw === null || raw === undefined || Number.isNaN(Number(raw))) return null;
     const base = `${label} ${pct(raw)}`;
     const reset = shortReset(win.resetsAtIso, nowMs);
     return reset ? `${base} (${reset})` : base;
@@ -56,20 +53,29 @@
     return reset ? `${line} · ${reset}` : line;
   }
 
-  /** Window-style used% line for claude / kimi / zai (and similar). */
-  function windowUsedLine(name, p, nowMs) {
-    const labels = [
-      ["5h", "five_hour"],
-      ["Week", "week"],
-      ["Month", "month"],
-    ];
+  function windowBits(labels, p, mode, nowMs) {
     const bits = [];
     for (const [label, id] of labels) {
-      const w = p.windows?.[id];
-      if (id === "month" && (!w || w.status !== "ok")) continue;
-      bits.push(winPart(label, w, "used", nowMs));
+      const part = winPart(label, p.windows?.[id], mode, nowMs);
+      if (part) bits.push(part);
     }
-    return `${name}: ${bits.join(", ")}`;
+    return bits;
+  }
+
+  /** USD spend line when used+total known; else remaining-left. */
+  function usdSpendBit(balance) {
+    if (!balance || balance.currency !== "USD") return null;
+    const used = money(balance.used);
+    const total = money(balance.total);
+    if (used !== null && total !== null) {
+      const usedPct =
+        balance.total > 0 && balance.used !== null && balance.used !== undefined
+          ? pct((Number(balance.used) / Number(balance.total)) * 100)
+          : null;
+      return usedPct ? `$${used}/$${total} (${usedPct})` : `$${used}/$${total}`;
+    }
+    const rem = money(balance.remaining);
+    return rem !== null ? `$${rem} left` : null;
   }
 
   /**
@@ -88,8 +94,8 @@
             : String(p.provider || "provider").toLowerCase();
 
     if (p.error && p.provider !== "cursor") {
-      // Prefer window NA lines when present; only collapse when no windows payload.
-      if (!p.windows) return `${name}: error`;
+      // Prefer window/balance lines when present; only collapse when empty.
+      if (!p.windows && !p.balance) return `${name}: error`;
     }
 
     if (p.provider === "cursor") {
@@ -99,25 +105,46 @@
         const total = `${name}: total ${m?.status === "ok" ? pct(m.usedPercent) ?? "NA" : "NA"}`;
         return withCycleReset(total, m?.resetsAtIso, nowMs);
       }
-      const parts = [`total ${pct(b.totalPercentUsed) ?? "NA"}`];
+      const parts = [];
+      if (b.totalPercentUsed !== null && b.totalPercentUsed !== undefined) {
+        parts.push(`total ${pct(b.totalPercentUsed) ?? "NA"}`);
+      }
       if (b.autoPercentUsed !== null && b.autoPercentUsed !== undefined) {
         parts.push(`first party ${pct(b.autoPercentUsed)}`);
       }
       if (b.apiPercentUsed !== null && b.apiPercentUsed !== undefined) {
         parts.push(`API ${pct(b.apiPercentUsed)}`);
       }
+      if (!parts.length) return `${name}: NA`;
       return withCycleReset(`${name}: ${parts.join(" ")}`, b.resetsAtIso, nowMs);
     }
 
     if (p.provider === "openrouter") {
-      const rem = p.balance?.remaining;
-      const amt = money(rem);
-      const base = amt !== null ? `openrouter: $${amt} left` : "openrouter: NA";
+      const rem = money(p.balance?.remaining);
+      const base = rem !== null ? `openrouter: $${rem} left` : "openrouter: NA";
       return withCycleReset(base, p.balance?.resetsAtIso, nowMs);
     }
 
     if (p.provider === "claude" || p.provider === "kimi" || p.provider === "zai") {
-      return windowUsedLine(name, p, nowMs);
+      const bits = windowBits(
+        [
+          ["5h", "five_hour"],
+          ["Week", "week"],
+          ["Month", "month"],
+        ],
+        p,
+        "used",
+        nowMs,
+      );
+      if (p.provider === "claude") {
+        const spend = usdSpendBit(p.balance);
+        if (spend) bits.push(spend);
+      }
+      if (!bits.length) {
+        if (p.error) return `${name}: error`;
+        return `${name}: NA`;
+      }
+      return withCycleReset(`${name}: ${bits.join(", ")}`, p.balance?.resetsAtIso, nowMs);
     }
 
     if (p.provider === "grok") {
@@ -125,10 +152,8 @@
       if (rem !== null && rem !== undefined && !Number.isNaN(Number(rem))) {
         return withCycleReset(`grok: ${Math.round(Number(rem))} credits left`, p.balance?.resetsAtIso, nowMs);
       }
-      const m = p.windows?.month;
-      if (m?.status === "ok") {
-        return `grok: ${winPart("month", m, "used", nowMs)}`;
-      }
+      const mPart = winPart("month", p.windows?.month, "used", nowMs);
+      if (mPart) return `grok: ${mPart}`;
       return "grok: NA";
     }
 
@@ -148,11 +173,10 @@
             ["Month", "month"],
           ];
 
-    const bits = [];
-    for (const [label, id] of labels) {
-      const w = p.windows?.[id];
-      if (id === "month" && (!w || w.status !== "ok")) continue;
-      bits.push(winPart(label, w, mode, nowMs));
+    const bits = windowBits(labels, p, mode, nowMs);
+    if (!bits.length) {
+      if (p.error) return `${name}: error`;
+      return `${name}: NA`;
     }
     return `${name}: ${bits.join(", ")}`;
   }
