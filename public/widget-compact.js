@@ -78,6 +78,18 @@
     return rem !== null ? `$${rem} left` : null;
   }
 
+  /** Short label for compact widget when providerLine would otherwise show "error". */
+  function compactErrorLabel(err) {
+    if (!err) return "error";
+    const rateMatch = err.match(/rate limited \(retry in ~(\d+)m\)/i);
+    if (rateMatch) return `rate limited ~${rateMatch[1]}m`;
+    if (/rate limit/i.test(err)) return "rate limited";
+    if (/credentials|logged in|sign in/i.test(err)) return "not signed in";
+    const httpMatch = err.match(/HTTP (\d{3})/i);
+    if (httpMatch) return `HTTP ${httpMatch[1]}`;
+    return "error";
+  }
+
   /**
    * @param {{ provider: string, label?: string, windows?: any, billing?: any, balance?: any, error?: string }} p
    * @param {{ nowMs?: number }} [opts]
@@ -95,7 +107,7 @@
 
     if (p.error && p.provider !== "cursor") {
       // Prefer window/balance lines when present; only collapse when empty.
-      if (!p.windows && !p.balance) return `${name}: error`;
+      if (!p.windows && !p.balance) return `${name}: ${compactErrorLabel(p.error)}`;
     }
 
     if (p.provider === "cursor") {
@@ -141,7 +153,7 @@
         if (spend) bits.push(spend);
       }
       if (!bits.length) {
-        if (p.error) return `${name}: error`;
+        if (p.error) return `${name}: ${compactErrorLabel(p.error)}`;
         return `${name}: NA`;
       }
       return withCycleReset(`${name}: ${bits.join(", ")}`, p.balance?.resetsAtIso, nowMs);
@@ -175,14 +187,15 @@
 
     const bits = windowBits(labels, p, mode, nowMs);
     if (!bits.length) {
-      if (p.error) return `${name}: error`;
+      if (p.error) return `${name}: ${compactErrorLabel(p.error)}`;
       return `${name}: NA`;
     }
     return `${name}: ${bits.join(", ")}`;
   }
 
-  /** @param {{ windows?: any, billing?: any, balance?: any }} p */
+  /** @param {{ windows?: any, billing?: any, balance?: any, error?: string }} p */
   function providerTitle(p) {
+    if (p.error) return p.error;
     const labels = [
       ["cycle", p.billing?.resetsAtIso],
       ["balance", p.balance?.resetsAtIso],

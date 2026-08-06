@@ -84,6 +84,19 @@ test("claude compact shows dollar spend when windows are NA", () => {
   assert.equal(line, "claude: $3.64/$9.00 (40%)");
 });
 
+test("claude compact shows rate limit hint instead of bare error", () => {
+  const line = providerLine({
+    provider: "claude",
+    error: "Claude usage rate limited (retry in ~42m)",
+    windows: {
+      five_hour: { status: "unavailable", usedPercent: null },
+      week: { status: "unavailable", usedPercent: null },
+      month: { status: "unavailable", usedPercent: null },
+    },
+  });
+  assert.equal(line, "claude: rate limited ~42m");
+});
+
 test("codex compact appends short reset per ok window", () => {
   const now = Date.parse("2026-07-20T12:00:00.000Z");
   const weekReset = new Date(now + (3 * 24 * 3600 + 5 * 3600) * 1000).toISOString();

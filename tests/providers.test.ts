@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { __test as claudeTest } from "../src/adapters/claude.js";
+import { __test as claudeTest, fetchClaudeUsage } from "../src/adapters/claude.js";
 import {
   fetchCursorUsage,
   readCursorAccessToken,
@@ -408,6 +408,33 @@ test("claude usageFromBody prefers spend when windows are null", () => {
   assert.equal(usage.error, undefined);
   assert.equal(usage.balance?.used, 3.64);
   assert.equal(usage.windows.five_hour.status, "unavailable");
+});
+
+test("claude fetchClaudeUsage skips API while rate-limit backoff active", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(
+      JSON.stringify({ error: { type: "rate_limit_error", message: "Rate limited." } }),
+      { status: 429, headers: { "retry-after": "120" } },
+    );
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const cfg = bareConfig({ claude: { accessToken: "test-token" } });
+  const first = await fetchClaudeUsage(cfg);
+  assert.match(first.error ?? "", /rate limited \(retry in ~2m\)/i);
+  assert.equal(calls, 1);
+
+  const second = await fetchClaudeUsage(cfg);
+  assert.match(second.error ?? "", /rate limited \(retry in ~/i);
+  assert.equal(calls, 1, "should not call Anthropic again during backoff");
 });
 
 test("kimi mapUsages maps session + week array entries", () => {

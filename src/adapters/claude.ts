@@ -19,6 +19,22 @@ const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 let cachedOk: ProviderUsage | null = null;
 let rateLimitedUntilMs = 0;
 
+function rateLimitReason(untilMs: number, fetchedAt: string): string {
+  const waitMin = Math.max(1, Math.ceil((untilMs - Date.now()) / 60_000));
+  return `Claude usage rate limited (retry in ~${waitMin}m)`;
+}
+
+function rateLimitUsage(untilMs: number, fetchedAt: string): ProviderUsage {
+  const reason = rateLimitReason(untilMs, fetchedAt);
+  return {
+    provider: "claude",
+    label: "Claude",
+    windows: unavailableAll(reason),
+    fetchedAt,
+    error: reason,
+  };
+}
+
 function readClaudeToken(cfg: Config): string | null {
   if (cfg.claude.accessToken) return cfg.claude.accessToken;
   const credPath = path.join(os.homedir(), ".claude", ".credentials.json");
@@ -161,8 +177,9 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
   }
 
   const now = Date.now();
-  if (now < rateLimitedUntilMs && cachedOk) {
-    return { ...cachedOk, fetchedAt };
+  if (now < rateLimitedUntilMs) {
+    if (cachedOk) return { ...cachedOk, fetchedAt };
+    return rateLimitUsage(rateLimitedUntilMs, fetchedAt);
   }
 
   try {
@@ -179,14 +196,7 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
       const waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 180;
       rateLimitedUntilMs = Date.now() + waitSec * 1000;
       if (cachedOk) return { ...cachedOk, fetchedAt };
-      const reason = `Claude usage rate limited (retry in ~${Math.ceil(waitSec / 60)}m)`;
-      return {
-        provider: "claude",
-        label: "Claude",
-        windows: unavailableAll(reason),
-        fetchedAt,
-        error: reason,
-      };
+      return rateLimitUsage(rateLimitedUntilMs, fetchedAt);
     }
     if (!res.ok) {
       const reason = `Claude usage HTTP ${res.status}`;
