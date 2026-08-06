@@ -84,7 +84,7 @@
     const rateMatch = err.match(/rate limited \(retry in ~(\d+)m\)/i);
     if (rateMatch) return `rate limited ~${rateMatch[1]}m`;
     if (/rate limit/i.test(err)) return "rate limited";
-    if (/credentials|logged in|sign in/i.test(err)) return "not signed in";
+    if (/credentials|logged in|sign in|token expired|auth login/i.test(err)) return "not signed in";
     const httpMatch = err.match(/HTTP (\d{3})/i);
     if (httpMatch) return `HTTP ${httpMatch[1]}`;
     return "error";

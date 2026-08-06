@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { Config } from "../config.js";
@@ -8,16 +8,29 @@ import { unavailableAll, okWindow } from "../types.js";
 /**
  * Claude Code / Claude.ai subscription usage via undocumented OAuth usage endpoint.
  * Auth: config/env token, else ~/.claude/.credentials.json (claudeAiOauth.accessToken).
+ * File-backed tokens auto-refresh via platform.claude.com when expired.
  *
  * Consumer plans populate five_hour / seven_day windows.
  * Enterprise / Teams credit plans populate spend (or extra_usage) in USD.
  */
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const TOKEN_EXPIRY_SKEW_MS = 60_000;
+
+interface ClaudeOAuthCreds {
+  accessToken: string;
+  refreshToken: string | null;
+  expiresAt: number | null;
+  credPath: string | null;
+  fromFile: boolean;
+}
 
 /** Soft cache so 429s don't wipe the last good spend/windows from the widget. */
 let cachedOk: ProviderUsage | null = null;
 let rateLimitedUntilMs = 0;
+let refreshRateLimitedUntilMs = 0;
 
 function rateLimitReason(untilMs: number, fetchedAt: string): string {
   const waitMin = Math.max(1, Math.ceil((untilMs - Date.now()) / 60_000));
@@ -35,20 +48,129 @@ function rateLimitUsage(untilMs: number, fetchedAt: string): ProviderUsage {
   };
 }
 
-function readClaudeToken(cfg: Config): string | null {
-  if (cfg.claude.accessToken) return cfg.claude.accessToken;
-  const credPath = path.join(os.homedir(), ".claude", ".credentials.json");
+function claudeCredentialsPath(): string {
+  return path.join(os.homedir(), ".claude", ".credentials.json");
+}
+
+function readClaudeOAuth(cfg: Config): ClaudeOAuthCreds | null {
+  if (cfg.claude.accessToken) {
+    return {
+      accessToken: cfg.claude.accessToken,
+      refreshToken: null,
+      expiresAt: null,
+      credPath: null,
+      fromFile: false,
+    };
+  }
+  const credPath = claudeCredentialsPath();
   if (!existsSync(credPath)) return null;
   try {
     const raw = JSON.parse(readFileSync(credPath, "utf8")) as Record<string, unknown>;
     const oauth = raw.claudeAiOauth as Record<string, unknown> | undefined;
-    if (typeof oauth?.accessToken === "string" && oauth.accessToken.trim()) {
-      return oauth.accessToken.trim();
-    }
+    if (typeof oauth?.accessToken !== "string" || !oauth.accessToken.trim()) return null;
+    const refreshToken =
+      typeof oauth.refreshToken === "string" && oauth.refreshToken.trim()
+        ? oauth.refreshToken.trim()
+        : null;
+    const expiresAt = Number(oauth.expiresAt);
+    return {
+      accessToken: oauth.accessToken.trim(),
+      refreshToken,
+      expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
+      credPath,
+      fromFile: true,
+    };
   } catch {
-    // ignore
+    return null;
   }
-  return null;
+}
+
+function readClaudeToken(cfg: Config): string | null {
+  return readClaudeOAuth(cfg)?.accessToken ?? null;
+}
+
+function tokenExpired(expiresAt: number | null, nowMs = Date.now()): boolean {
+  if (expiresAt === null) return false;
+  return nowMs >= expiresAt - TOKEN_EXPIRY_SKEW_MS;
+}
+
+function writeClaudeOAuthFile(
+  credPath: string,
+  patch: { accessToken: string; refreshToken: string; expiresAt: number },
+): void {
+  const raw = JSON.parse(readFileSync(credPath, "utf8")) as Record<string, unknown>;
+  const oauth = (raw.claudeAiOauth as Record<string, unknown> | undefined) ?? {};
+  raw.claudeAiOauth = {
+    ...oauth,
+    accessToken: patch.accessToken,
+    refreshToken: patch.refreshToken,
+    expiresAt: patch.expiresAt,
+  };
+  const tmp = `${credPath}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+  renameSync(tmp, credPath);
+}
+
+async function refreshClaudeAccessToken(refreshToken: string): Promise<{
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+} | null> {
+  if (Date.now() < refreshRateLimitedUntilMs) return null;
+
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": claudeUserAgent(),
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: OAUTH_CLIENT_ID,
+    }),
+  });
+
+  if (res.status === 429) {
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 300;
+    refreshRateLimitedUntilMs = Date.now() + waitSec * 1000;
+    return null;
+  }
+  if (!res.ok) return null;
+
+  const body = (await res.json()) as Record<string, unknown>;
+  const accessToken = typeof body.access_token === "string" ? body.access_token.trim() : "";
+  const nextRefresh =
+    typeof body.refresh_token === "string" ? body.refresh_token.trim() : refreshToken;
+  const expiresIn = Number(body.expires_in);
+  if (!accessToken) return null;
+  refreshRateLimitedUntilMs = 0;
+  return {
+    accessToken,
+    refreshToken: nextRefresh,
+    expiresAt: Date.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 28_800) * 1000,
+  };
+}
+
+async function ensureFreshClaudeToken(cfg: Config): Promise<ClaudeOAuthCreds | null> {
+  const creds = readClaudeOAuth(cfg);
+  if (!creds) return null;
+  if (!creds.fromFile || !creds.refreshToken || !creds.credPath) return creds;
+  if (!tokenExpired(creds.expiresAt)) return creds;
+
+  const refreshed = await refreshClaudeAccessToken(creds.refreshToken);
+  if (!refreshed) return creds;
+
+  writeClaudeOAuthFile(creds.credPath, refreshed);
+  return {
+    accessToken: refreshed.accessToken,
+    refreshToken: refreshed.refreshToken,
+    expiresAt: refreshed.expiresAt,
+    credPath: creds.credPath,
+    fromFile: true,
+  };
 }
 
 function claudeUserAgent(): string {
@@ -161,10 +283,31 @@ function usageFromBody(body: Record<string, unknown>, fetchedAt: string): Provid
   };
 }
 
+function authErrorReason(status: number, refreshBlocked: boolean): string {
+  if (status === 401) {
+    if (refreshBlocked) {
+      return "Claude token expired; auth refresh rate limited. Retry later or run: claude auth login";
+    }
+    return "Claude token expired. Run: claude auth login";
+  }
+  return `Claude usage HTTP ${status}`;
+}
+
+async function fetchUsageWithToken(token: string): Promise<Response> {
+  return fetch(USAGE_URL, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "anthropic-beta": "oauth-2025-04-20",
+      "User-Agent": claudeUserAgent(),
+      Accept: "application/json",
+    },
+  });
+}
+
 export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
   const fetchedAt = new Date().toISOString();
-  const token = readClaudeToken(cfg);
-  if (!token) {
+  let creds = await ensureFreshClaudeToken(cfg);
+  if (!creds?.accessToken) {
     const reason =
       "No Claude credentials. Sign in with Claude Code, or set CLAUDE_ACCESS_TOKEN / config.claude.accessToken.";
     return {
@@ -183,14 +326,31 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
   }
 
   try {
-    const res = await fetch(USAGE_URL, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "anthropic-beta": "oauth-2025-04-20",
-        "User-Agent": claudeUserAgent(),
-        Accept: "application/json",
-      },
-    });
+    let res = await fetchUsageWithToken(creds.accessToken);
+    if (res.status === 401 && creds.fromFile && creds.refreshToken && creds.credPath) {
+      const refreshBlocked = Date.now() < refreshRateLimitedUntilMs;
+      const refreshed = refreshBlocked ? null : await refreshClaudeAccessToken(creds.refreshToken);
+      if (refreshed) {
+        writeClaudeOAuthFile(creds.credPath, refreshed);
+        creds = {
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken,
+          expiresAt: refreshed.expiresAt,
+          credPath: creds.credPath,
+          fromFile: true,
+        };
+        res = await fetchUsageWithToken(creds.accessToken);
+      } else if (tokenExpired(creds.expiresAt)) {
+        const reason = authErrorReason(401, refreshBlocked);
+        return {
+          provider: "claude",
+          label: "Claude",
+          windows: unavailableAll(reason),
+          fetchedAt,
+          error: reason,
+        };
+      }
+    }
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get("retry-after"));
       const waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 180;
@@ -199,7 +359,7 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
       return rateLimitUsage(rateLimitedUntilMs, fetchedAt);
     }
     if (!res.ok) {
-      const reason = `Claude usage HTTP ${res.status}`;
+      const reason = authErrorReason(res.status, false);
       if (cachedOk) return { ...cachedOk, fetchedAt };
       return {
         provider: "claude",
@@ -233,8 +393,14 @@ export const __test = {
   moneyFromMinor,
   usageFromBody,
   readClaudeToken,
+  readClaudeOAuth,
+  tokenExpired,
+  refreshClaudeAccessToken,
+  ensureFreshClaudeToken,
+  authErrorReason,
   resetCache() {
     cachedOk = null;
     rateLimitedUntilMs = 0;
+    refreshRateLimitedUntilMs = 0;
   },
 };

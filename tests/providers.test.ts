@@ -437,6 +437,80 @@ test("claude fetchClaudeUsage skips API while rate-limit backoff active", async 
   assert.equal(calls, 1, "should not call Anthropic again during backoff");
 });
 
+test("claude tokenExpired respects skew before expiresAt", () => {
+  const expiresAt = Date.now() + 30_000;
+  assert.equal(claudeTest.tokenExpired(expiresAt), true);
+  assert.equal(claudeTest.tokenExpired(expiresAt + 120_000), false);
+});
+
+test("claude fetchClaudeUsage refreshes expired file token then loads usage", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+
+  const home = await makeTempDir(t);
+  const credPath = path.join(home, ".claude", ".credentials.json");
+  await mkdir(path.dirname(credPath), { recursive: true });
+  await writeFile(
+    credPath,
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "stale-token",
+        refreshToken: "refresh-me",
+        expiresAt: Date.now() - 60_000,
+      },
+    }),
+    "utf8",
+  );
+
+  const originalHomedir = os.homedir;
+  os.homedir = () => home;
+  t.after(() => {
+    os.homedir = originalHomedir;
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === "https://platform.claude.com/v1/oauth/token") {
+      return new Response(
+        JSON.stringify({
+          access_token: "fresh-token",
+          refresh_token: "refresh-rotated",
+          expires_in: 3600,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url === "https://api.anthropic.com/api/oauth/usage") {
+      const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
+      assert.equal(auth, "Bearer fresh-token");
+      return new Response(
+        JSON.stringify({
+          five_hour: { utilization: 12, resets_at: "2026-08-06T22:00:00.000Z" },
+          seven_day: { utilization: 34, resets_at: "2026-08-13T00:00:00.000Z" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const usage = await fetchClaudeUsage(bareConfig());
+  assert.equal(usage.error, undefined);
+  assert.equal(usage.windows.five_hour.status, "ok");
+  assert.equal(usage.windows.five_hour.usedPercent, 12);
+
+  const saved = JSON.parse(await readFile(credPath, "utf8")) as {
+    claudeAiOauth: { accessToken: string; refreshToken: string; expiresAt: number };
+  };
+  assert.equal(saved.claudeAiOauth.accessToken, "fresh-token");
+  assert.equal(saved.claudeAiOauth.refreshToken, "refresh-rotated");
+  assert.ok(saved.claudeAiOauth.expiresAt > Date.now());
+});
+
 test("kimi mapUsages maps session + week array entries", () => {
   const windows = kimiTest.mapUsages({
     data: [
