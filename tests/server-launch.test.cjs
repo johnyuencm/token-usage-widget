@@ -617,11 +617,11 @@ test("ensureUsageServer picks a free Windows loopback port when 4321 is excluded
     platform: "win32",
     host: "127.0.0.1",
     port: 4321,
-    env: {},
+    env: { USAGE_FIXTURE: "1" },
     maxAttempts: 1,
     fetchHealth: async (host, port) => {
       healthCalls.push({ host, port });
-      if (port === 8877) return { ok: true, fixture: false };
+      if (port === 8877) return { ok: true, fixture: true };
       return null;
     },
     isPortAvailable: async () => false,
