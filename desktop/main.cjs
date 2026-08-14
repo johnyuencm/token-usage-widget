@@ -236,11 +236,45 @@ function runWidgetMain({
   }
 
   function windowIconPath() {
-    for (const name of ["icon.png", "icon-256.png", "icon-64.png", "icon-32.png"]) {
+    for (const name of ["icon.ico", "icon.png", "icon-256.png", "icon-64.png", "icon-32.png"]) {
       const p = iconPath(name);
       if (fs.existsSync(p)) return p;
     }
     return undefined;
+  }
+
+  function ensureStartMenuShortcut() {
+    if (platform !== "win32") return;
+    if (typeof shell.writeShortcutLink !== "function") return;
+    let appData;
+    try {
+      appData = typeof app.getPath === "function" ? app.getPath("appData") : null;
+    } catch {
+      return;
+    }
+    if (!appData) return;
+    const shortcutPath = path.join(
+      appData,
+      "Microsoft",
+      "Windows",
+      "Start Menu",
+      "Programs",
+      "Token Usage Widget.lnk",
+    );
+    const cmd = path.join(root, "scripts", "start-widget.cmd");
+    const ico = iconPath("icon.ico");
+    try {
+      shell.writeShortcutLink(shortcutPath, {
+        target: cmd,
+        cwd: root,
+        description: "Token Usage always-on-top corner widget",
+        icon: fs.existsSync(ico) ? ico : undefined,
+        iconIndex: 0,
+        appUserModelId: "com.token-usage.widget",
+      });
+    } catch {
+      // Best-effort; missing Start Menu entry must not block the widget.
+    }
   }
 
   function trayIcon() {
@@ -449,6 +483,7 @@ function runWidgetMain({
     if (platform === "win32" && typeof app.setAppUserModelId === "function") {
       app.setAppUserModelId("com.token-usage.widget");
     }
+    ensureStartMenuShortcut();
     if (policy.activationPolicy && typeof app.setActivationPolicy === "function") {
       app.setActivationPolicy(policy.activationPolicy);
     }

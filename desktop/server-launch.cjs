@@ -53,8 +53,11 @@ function isLoopbackPortAvailable(host, port, network = net) {
   return new Promise((resolve, reject) => {
     const server = network.createServer();
     const onError = (err) => {
-      if (err?.code === "EADDRINUSE") resolve(false);
-      else reject(err);
+      // EACCES/EPERM: Windows Hyper-V/WSL/Docker excluded port ranges. Treat as
+      // unavailable so callers can bind a different loopback port.
+      if (err?.code === "EADDRINUSE" || err?.code === "EACCES" || err?.code === "EPERM") {
+        resolve(false);
+      } else reject(err);
     };
     server.once("error", onError);
     server.unref();
@@ -251,18 +254,16 @@ async function ensureUsageServer(options = {}) {
   }
 
   let launchPort = port;
-  if (platform === "darwin") {
-    const preferredPortUnavailable = existing?.ok || !(await isPortAvailableFn(host, port));
-    if (preferredPortUnavailable) {
-      launchPort = await allocateFreePortFn(host);
-    }
-  } else if (existing?.ok && existing.fixture !== wantFixture) {
+  if (existing?.ok && existing.fixture !== wantFixture && platform !== "darwin") {
     fileSystem.appendFileSync(
       logPath,
       `[${new Date().toISOString()}] port ${port} fixture=${existing.fixture} but want ${wantFixture}; freeing\n`,
     );
     freePortFn(port);
     await sleep(500);
+  } else if (existing?.ok || !(await isPortAvailableFn(host, port))) {
+    // Occupied, healthy-but-not-ours (Darwin), or Windows excluded-port EACCES.
+    launchPort = await allocateFreePortFn(host);
   }
   const endpoint = buildEndpoint(host, launchPort);
 
@@ -354,6 +355,7 @@ module.exports = {
   SERVER_LOG,
   buildEndpoint,
   allocateFreeLoopbackPort,
+  isLoopbackPortAvailable,
   healthCheck,
   fetchHealth,
   freePort,

@@ -11,6 +11,7 @@ const {
   assertNotElectronBinary,
   buildEndpoint,
   allocateFreeLoopbackPort,
+  isLoopbackPortAvailable,
   ensureUsageServer,
   healthCheck,
 } = require("../desktop/server-launch.cjs");
@@ -63,6 +64,12 @@ async function loadMainHarness(
     app.quitCalls += 1;
     app.emit("before-quit");
   };
+  app.getPath = (name) => {
+    if (name === "appData") return "C:\\Users\\test\\AppData\\Roaming";
+    if (name === "userData") return "C:\\Users\\test\\AppData\\Roaming\\token-usage-widget";
+    return "C:\\tmp";
+  };
+  app.setAppUserModelId = () => {};
 
   const ipcHandlers = new Map();
   const windows = [];
@@ -139,6 +146,7 @@ async function loadMainHarness(
   screenApi.getCursorScreenPoint = () => cursorPoint;
   screenApi.getDisplayNearestPoint = () => activePointerDisplay;
 
+  const shortcutWrites = [];
   const electron = {
     app,
     BrowserWindow: FakeBrowserWindow,
@@ -181,6 +189,10 @@ async function loadMainHarness(
       openExternal: (url) => {
         openedUrls.push(url);
       },
+      writeShortcutLink: (shortcutPath, opts) => {
+        shortcutWrites.push({ path: shortcutPath, opts });
+        return true;
+      },
     },
     ipcMain: {
       handle: (channel, handler) => ipcHandlers.set(channel, handler),
@@ -222,6 +234,7 @@ async function loadMainHarness(
     windows,
     trays,
     openedUrls,
+    shortcutWrites,
     healthCalls,
     legacyIcons,
     templateIcons,
@@ -355,6 +368,28 @@ test("resolveNodeBinary uses injected Darwin filesystem and process inputs", () 
 test("assertNotElectronBinary throws for electron.exe", () => {
   assert.throws(() => assertNotElectronBinary("C:\\\\fake\\\\electron.exe"), /Refusing/);
   assert.doesNotThrow(() => assertNotElectronBinary("C:\\\\nvm4w\\\\nodejs\\\\node.exe"));
+});
+
+test("isLoopbackPortAvailable treats EACCES and EADDRINUSE as unavailable", async () => {
+  function createListenErrorNet(code) {
+    return {
+      createServer() {
+        const server = new EventEmitter();
+        server.unref = () => {};
+        server.listen = () => {
+          queueMicrotask(() => {
+            const err = Object.assign(new Error(code), { code });
+            server.emit("error", err);
+          });
+        };
+        return server;
+      },
+    };
+  }
+
+  assert.equal(await isLoopbackPortAvailable("127.0.0.1", 4321, createListenErrorNet("EACCES")), false);
+  assert.equal(await isLoopbackPortAvailable("127.0.0.1", 4321, createListenErrorNet("EPERM")), false);
+  assert.equal(await isLoopbackPortAvailable("127.0.0.1", 4321, createListenErrorNet("EADDRINUSE")), false);
 });
 
 test("buildEndpoint derives one base URL from the returned host and port", () => {
@@ -572,6 +607,49 @@ test("ensureUsageServer preserves Windows mode-mismatch replacement on the prefe
   ]);
 });
 
+test("ensureUsageServer picks a free Windows loopback port when 4321 is excluded (EACCES)", async () => {
+  const child = createFakeChild();
+  const healthCalls = [];
+  const freedPorts = [];
+  let spawnedPort;
+
+  const result = await ensureUsageServer({
+    platform: "win32",
+    host: "127.0.0.1",
+    port: 4321,
+    env: {},
+    maxAttempts: 1,
+    fetchHealth: async (host, port) => {
+      healthCalls.push({ host, port });
+      if (port === 8877) return { ok: true, fixture: false };
+      return null;
+    },
+    isPortAvailable: async () => false,
+    allocateFreeLoopbackPort: async () => 8877,
+    freePort: (port) => freedPorts.push(port),
+    resolveNodeBinary: () => "C:\\nvm4w\\nodejs\\node.exe",
+    sleep: async () => {},
+    fs: createFakeFileSystem(),
+    spawn: (_nodeBin, _args, options) => {
+      spawnedPort = options.env.PORT;
+      return child;
+    },
+  });
+
+  assert.deepEqual(freedPorts, []);
+  assert.equal(spawnedPort, "8877");
+  assert.equal(result.owned, true);
+  assert.deepEqual(result.endpoint, {
+    host: "127.0.0.1",
+    port: 8877,
+    baseUrl: "http://127.0.0.1:8877",
+  });
+  assert.deepEqual(healthCalls, [
+    { host: "127.0.0.1", port: 4321 },
+    { host: "127.0.0.1", port: 8877 },
+  ]);
+});
+
 test("Darwin main applies menu-bar utility policy and reanchors every restore path", async () => {
   const harness = await loadMainHarness(
     {
@@ -598,6 +676,7 @@ test("Darwin main applies menu-bar utility policy and reanchors every restore pa
 
   assert.deepEqual(harness.app.activationPolicies, ["accessory"]);
   assert.equal(harness.app.dock.hideCalls, 1);
+  assert.deepEqual(harness.shortcutWrites, []);
   assert.deepEqual(window.options, {
     x: 3024,
     y: 712,
@@ -793,6 +872,11 @@ test("Win32 main preserves tray, primary placement, Spaces, and native close-to-
   assert.equal(harness.legacyIcons.length, 1);
   assert.equal(harness.templateIcons.length, 0);
   assert.equal(harness.trays[0].icon, harness.legacyIcons[0]);
+  assert.equal(harness.shortcutWrites.length, 1);
+  assert.match(harness.shortcutWrites[0].path, /Start Menu\\Programs\\Token Usage Widget\.lnk$/);
+  assert.match(harness.shortcutWrites[0].opts.target, /start-widget\.cmd$/);
+  assert.match(harness.shortcutWrites[0].opts.icon, /icon\.ico$/);
+  assert.equal(harness.shortcutWrites[0].opts.appUserModelId, "com.token-usage.widget");
 
   window.emit("ready-to-show");
   let prevented = false;
@@ -963,7 +1047,8 @@ test("ensureUsageServer starts fixture server with real node (not electron)", as
 });
 
 test("ensureUsageServer restarts after the child process dies", async () => {
-  const port = 18766;
+  // Distinct from e2e-smoke (18766) so parallel runs do not reuse that fixture server.
+  const port = 28767;
   assert.equal(await healthCheck("127.0.0.1", port, 500), false);
 
   const first = await ensureUsageServer({

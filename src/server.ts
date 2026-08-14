@@ -123,6 +123,11 @@ async function main(): Promise<void> {
     await serveStatic(req, res);
   });
 
+  server.on("error", (err) => {
+    // eslint-disable-next-line no-console
+    console.error("fatal:", err);
+    process.exit(1);
+  });
   server.listen(cfg.server.port, cfg.server.host, () => {
     const addr = `http://${cfg.server.host}:${cfg.server.port}`;
     // eslint-disable-next-line no-console

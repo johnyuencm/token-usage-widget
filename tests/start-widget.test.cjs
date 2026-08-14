@@ -3,6 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
 const path = require("node:path");
 const {
   launchWidget,
@@ -29,6 +30,16 @@ function createFileSystem(files) {
 test("the documented background npm command uses the platform dispatcher and runs its regression tests", () => {
   assert.equal(packageJson.scripts["widget:bg"], "node scripts/start-widget.cjs");
   assert.match(packageJson.scripts.test, /tests\/start-widget\.test\.cjs/);
+});
+
+test("Windows startup script writes Start Menu and Startup shortcuts with the widget icon", () => {
+  const ps1 = fs.readFileSync(path.join(__dirname, "..", "scripts", "start-widget.ps1"), "utf8");
+  assert.match(ps1, /GetFolderPath\(["']Programs["']\)/);
+  assert.match(ps1, /GetFolderPath\(["']Startup["']\)/);
+  assert.match(ps1, /icon\.ico/);
+  assert.match(ps1, /IconLocation/);
+  assert.match(ps1, /Write-WidgetShortcut/);
+  assert.equal(fs.existsSync(path.join(__dirname, "..", "desktop", "icons", "icon.ico")), true);
 });
 
 test("Darwin launch planning uses checkout-local Electron and the current Node on Intel and Apple Silicon", () => {
