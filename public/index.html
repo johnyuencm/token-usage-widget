@@ -27,19 +27,81 @@
       </div>
     </div>
     <div class="header-meta">
+      <nav class="site-nav" aria-label="Primary">
+        <a href="#dashboard" class="site-nav-link site-nav-link--active" data-view="dashboard">Dashboard</a>
+        <a href="#settings" class="site-nav-link" data-view="settings">Settings</a>
+      </nav>
       <span id="fixture-badge" class="badge badge--ghost" hidden>FIXTURE</span>
       <span id="refresh-clock" class="refresh-clock">--:--:--</span>
-      <span class="refresh-pulse" title="Auto-refresh every 60s"></span>
+      <span class="refresh-pulse" id="refresh-pulse" title="Auto-refresh"></span>
     </div>
   </header>
 
-  <main class="providers" id="providers">
-    <!-- provider columns injected by app.js -->
+  <main class="providers view view--active" id="view-dashboard" data-view="dashboard">
+    <div class="providers-grid" id="providers">
+      <!-- provider columns injected by app.js -->
+    </div>
+  </main>
+
+  <main class="settings view" id="view-settings" data-view="settings" hidden>
+    <form class="settings-panel" id="settings-form">
+      <section class="settings-section">
+        <h2>Refresh &amp; polling</h2>
+        <p class="settings-hint">UI refresh is how often the widget/dashboard reload. Provider poll is the minimum gap between upstream API calls (raise Claude to avoid rate limits).</p>
+        <label class="settings-field">
+          <span>UI refresh interval</span>
+          <select name="refreshIntervalSec" id="setting-refresh">
+            <option value="30">30 seconds</option>
+            <option value="60">1 minute</option>
+            <option value="120">2 minutes</option>
+            <option value="300">5 minutes</option>
+            <option value="600">10 minutes</option>
+            <option value="900">15 minutes</option>
+          </select>
+        </label>
+        <label class="settings-field">
+          <span>Claude upstream poll</span>
+          <select name="pollClaudeSec" id="setting-poll-claude">
+            <option value="60">1 minute</option>
+            <option value="120">2 minutes</option>
+            <option value="300">5 minutes (recommended)</option>
+            <option value="600">10 minutes</option>
+            <option value="900">15 minutes</option>
+            <option value="1800">30 minutes</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="settings-section">
+        <h2>Claude display</h2>
+        <p class="settings-hint">Choose which meters appear in the widget and dashboard. Enterprise seats often only have spend limits.</p>
+        <div class="settings-checks">
+          <label><input type="checkbox" name="claudeFiveHour" id="setting-claude-5h" /> 5-hour window</label>
+          <label><input type="checkbox" name="claudeWeek" id="setting-claude-week" /> Weekly window</label>
+          <label><input type="checkbox" name="claudeSpend" id="setting-claude-spend" /> Spend limit (USD)</label>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2>Cursor display</h2>
+        <p class="settings-hint">Pick billing breakdown lines for the compact widget. Dashboard always shows the full card when expanded.</p>
+        <div class="settings-checks">
+          <label><input type="checkbox" name="cursorTotal" id="setting-cursor-total" /> Total usage</label>
+          <label><input type="checkbox" name="cursorAuto" id="setting-cursor-auto" /> First-party models</label>
+          <label><input type="checkbox" name="cursorApi" id="setting-cursor-api" /> API usage</label>
+        </div>
+      </section>
+
+      <div class="settings-actions">
+        <button type="submit" class="settings-save">Save settings</button>
+        <span class="settings-status" id="settings-status" aria-live="polite"></span>
+      </div>
+    </form>
   </main>
 
   <footer class="site-footer">
     <span id="footer-status">Connecting…</span>
-    <span class="footer-hint">Auto-refresh 60s</span>
+    <span class="footer-hint" id="footer-hint">Auto-refresh</span>
   </footer>
 
   <template id="provider-template">

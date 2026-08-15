@@ -1,8 +1,10 @@
-const REFRESH_MS = 60_000;
 const bodyEl = document.getElementById("body");
 const statusEl = document.getElementById("status");
 const fixtureEl = document.getElementById("fixture");
 const { providerLine, providerTitle } = globalThis.TokenUsageCompact;
+
+let uiSettings = null;
+let refreshTimer = null;
 
 function escapeHtml(s) {
   return String(s)
@@ -13,7 +15,6 @@ function escapeHtml(s) {
 }
 
 function fitToContent() {
-  // Hug chrome + lines + footer; keep width (user-resized / persisted).
   requestAnimationFrame(() => {
     const root = document.documentElement;
     const height = Math.ceil(Math.max(root.scrollHeight, root.getBoundingClientRect().height));
@@ -21,10 +22,16 @@ function fitToContent() {
   });
 }
 
+function lineOpts() {
+  return uiSettings?.display ? { display: uiSettings.display } : undefined;
+}
+
 function renderAll(data) {
+  if (data.ui) uiSettings = data.ui;
+  const opts = lineOpts();
   const lines = (data.providers || [])
     .map((p) => {
-      const line = providerLine(p);
+      const line = providerLine(p, opts);
       const title = providerTitle(p);
       const cls = p.error ? "line line--err" : "line";
       const tip = title ? ` title="${escapeHtml(title)}"` : "";
@@ -38,6 +45,13 @@ function renderAll(data) {
   statusEl.textContent = t ? `↻ ${t}` : "";
   statusEl.classList.remove("error");
   fitToContent();
+  scheduleRefresh();
+}
+
+function scheduleRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  const sec = uiSettings?.refreshIntervalSec ?? 60;
+  refreshTimer = setInterval(refresh, Math.max(30, sec) * 1000);
 }
 
 async function loadUsage() {
@@ -54,7 +68,6 @@ async function refresh() {
     statusEl.classList.add("error");
     statusEl.title = String(err.message || err);
     fitToContent();
-    // Main process owns the Node usage server; ask it to revive, then retry once.
     try {
       const revived = await window.widgetBridge?.ensureServer?.();
       if (revived?.ok) await loadUsage();
@@ -76,4 +89,3 @@ document.getElementById("btn-quit").addEventListener("click", () => {
 });
 
 refresh();
-setInterval(refresh, REFRESH_MS);

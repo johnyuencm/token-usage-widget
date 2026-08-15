@@ -5,7 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, isFixtureMode, type ProviderFlags } from "./config.js";
 import { buildFixtureResponse } from "./fixtures.js";
-import { fetchEnabledProviders } from "./providers/registry.js";
+import { fetchEnabledProvidersThrottled } from "./providers/poll-cache.js";
+import { getPublicSettings, saveUiSettingsPatch } from "./settings-api.js";
 import type { UsageResponse } from "./types.js";
 import { ALL_PROVIDER_IDS } from "./types.js";
 
@@ -41,12 +42,41 @@ async function gatherUsage(): Promise<UsageResponse> {
       : cfg.providers;
     return buildFixtureResponse(flags);
   }
-  const providers = await fetchEnabledProviders(cfg);
+  const providers = await fetchEnabledProvidersThrottled(cfg);
   return {
     fetchedAt: new Date().toISOString(),
     fixture: false,
     providers,
+    ui: cfg.ui,
   };
+}
+
+async function handleApiSettings(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (req.method === "GET") {
+    try {
+      const body = await getPublicSettings();
+      sendJson(res, 200, body);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      sendJson(res, 500, { error: msg });
+    }
+    return;
+  }
+  if (req.method === "PUT") {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const raw = Buffer.concat(chunks).toString("utf8");
+      const parsed = raw.trim() ? JSON.parse(raw) : {};
+      const ui = await saveUiSettingsPatch(parsed.ui ?? parsed);
+      sendJson(res, 200, { ok: true, ui });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      sendJson(res, 400, { ok: false, error: msg });
+    }
+    return;
+  }
+  sendJson(res, 405, { error: "Method not allowed" });
 }
 
 async function handleApiUsage(res: http.ServerResponse): Promise<void> {
@@ -107,6 +137,10 @@ async function main(): Promise<void> {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const pathname = url.pathname;
+    if (pathname === "/api/settings") {
+      await handleApiSettings(req, res);
+      return;
+    }
     if (req.method !== "GET") {
       res.writeHead(405, { "content-type": "text/plain" });
       res.end("Method not allowed");

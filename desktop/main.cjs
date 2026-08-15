@@ -407,6 +407,10 @@ function runWidgetMain({
         label: "Open full dashboard",
         click: () => shell.openExternal(`${currentServerEndpoint().baseUrl}/`),
       },
+      {
+        label: "Settings…",
+        click: () => shell.openExternal(`${currentServerEndpoint().baseUrl}/#settings`),
+      },
       { type: "separator" },
       {
         label: "Quit",

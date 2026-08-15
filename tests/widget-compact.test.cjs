@@ -97,6 +97,31 @@ test("claude compact shows rate limit hint instead of bare error", () => {
   assert.equal(line, "claude: rate limited ~42m");
 });
 
+test("claude compact week-only display pref", () => {
+  const line = providerLine(
+    {
+      provider: "claude",
+      windows: {
+        five_hour: { status: "ok", usedPercent: 12 },
+        week: { status: "ok", usedPercent: 34 },
+      },
+    },
+    { display: { claude: { fiveHour: false, week: true, spend: false } } },
+  );
+  assert.equal(line, "claude: Week 34%");
+});
+
+test("cursor compact hides API when display pref off", () => {
+  const line = providerLine(
+    {
+      provider: "cursor",
+      billing: { totalPercentUsed: 10, autoPercentUsed: 5, apiPercentUsed: 99 },
+    },
+    { display: { cursor: { total: true, auto: true, api: false } } },
+  );
+  assert.equal(line, "cursor: total 10% first party 5%");
+});
+
 test("codex compact appends short reset per ok window", () => {
   const now = Date.parse("2026-07-20T12:00:00.000Z");
   const weekReset = new Date(now + (3 * 24 * 3600 + 5 * 3600) * 1000).toISOString();

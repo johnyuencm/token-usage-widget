@@ -5,6 +5,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import type { ProviderId, WindowId } from "./types.js";
 import { ALL_PROVIDER_IDS } from "./types.js";
+import { DEFAULT_UI, mergeUiSettings, type UiSettings } from "./ui-settings.js";
 
 const PACKAGE_NAME = "token-usage-widget";
 
@@ -72,6 +73,7 @@ export interface Config {
     port: number;
     host: string;
   };
+  ui: UiSettings;
 }
 
 const DEFAULT_DB_PATH = path.join(os.homedir(), ".local", "share", "opencode", "opencode.db");
@@ -114,6 +116,7 @@ function defaultConfig(): Config {
     grok: { oauthToken: null },
     claude: { accessToken: null },
     server: { port: 4321, host: "127.0.0.1" },
+    ui: structuredClone(DEFAULT_UI),
   };
 }
 
@@ -205,6 +208,7 @@ export async function loadConfig(): Promise<Config> {
         if (typeof srv.port === "number" && !envPort) cfg.server.port = srv.port;
         if (typeof srv.host === "string") cfg.server.host = srv.host;
       }
+      if (parsed.ui) cfg.ui = mergeUiSettings(parsed.ui);
     } catch {
       // ignore malformed config files, keep defaults
     }

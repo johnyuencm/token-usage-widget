@@ -39,5 +39,23 @@
   "server": {
     "port": 4321,
     "host": "127.0.0.1"
+  },
+  "ui": {
+    "refreshIntervalSec": 60,
+    "pollIntervalSec": {
+      "claude": 300
+    },
+    "display": {
+      "claude": {
+        "fiveHour": true,
+        "week": true,
+        "spend": true
+      },
+      "cursor": {
+        "total": true,
+        "auto": true,
+        "api": true
+      }
+    }
   }
 }

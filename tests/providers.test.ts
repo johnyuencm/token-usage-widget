@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import { __test as claudeTest, fetchClaudeUsage } from "../src/adapters/claude.js";
+import { __test as pollTest, fetchProviderThrottled } from "../src/providers/poll-cache.js";
 import {
   fetchCursorUsage,
   readCursorAccessToken,
@@ -21,6 +22,8 @@ import { __test as zaiTest } from "../src/adapters/zai.js";
 import { fetchOpenRouterUsage } from "../src/adapters/openrouter.js";
 import type { Config } from "../src/config.js";
 import { DEFAULT_ENABLED } from "../src/config.js";
+import { DEFAULT_UI } from "../src/ui-settings.js";
+import { unavailableAll } from "../src/types.js";
 
 const require = createRequire(import.meta.url);
 const { providerLine } = require("../public/widget-compact.js");
@@ -39,6 +42,7 @@ function bareConfig(overrides: Partial<Config> = {}): Config {
     grok: { oauthToken: null },
     claude: { accessToken: null },
     server: { port: 4321, host: "127.0.0.1" },
+    ui: structuredClone(DEFAULT_UI),
     ...overrides,
   };
 }
@@ -509,6 +513,39 @@ test("claude fetchClaudeUsage refreshes expired file token then loads usage", as
   assert.equal(saved.claudeAiOauth.accessToken, "fresh-token");
   assert.equal(saved.claudeAiOauth.refreshToken, "refresh-rotated");
   assert.ok(saved.claudeAiOauth.expiresAt > Date.now());
+});
+
+test("poll cache serves cached provider payload within interval", async (t) => {
+  pollTest.resetPollCache();
+  t.after(() => pollTest.resetPollCache());
+
+  pollTest.cache.set("claude", {
+    fetchedAtMs: Date.now(),
+    usage: {
+      provider: "claude",
+      label: "Claude",
+      windows: unavailableAll("cached"),
+      fetchedAt: "2026-08-06T00:00:00.000Z",
+    },
+  });
+
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => {
+    calls += 1;
+    throw new Error("should not fetch while cache is warm");
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const cfg = bareConfig({
+    providers: { ...DEFAULT_ENABLED, claude: true },
+    ui: { ...DEFAULT_UI, pollIntervalSec: { claude: 300 } },
+  });
+  const out = await fetchProviderThrottled("claude", cfg);
+  assert.equal(out.windows.five_hour.reason, "cached");
+  assert.equal(calls, 0);
 });
 
 test("kimi mapUsages maps session + week array entries", () => {

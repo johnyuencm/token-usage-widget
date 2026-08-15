@@ -60,6 +60,7 @@ export interface UsageResponse {
   fetchedAt: string;
   fixture: boolean;
   providers: ProviderUsage[];
+  ui?: import("./ui-settings.js").UiSettings;
 }
 
 export const ALL_PROVIDER_IDS: ProviderId[] = [

@@ -10,16 +10,33 @@ const OPENCODE_WINDOW_META = {
   month: { label: "Monthly Usage", short: "30d" },
 };
 
-const REFRESH_MS = 60_000;
+const DEFAULT_UI = {
+  refreshIntervalSec: 60,
+  pollIntervalSec: { claude: 300 },
+  display: {
+    claude: { fiveHour: true, week: true, spend: true },
+    cursor: { total: true, auto: true, api: true },
+  },
+};
+
+let uiSettings = structuredClone(DEFAULT_UI);
+let refreshTimer = null;
 
 const providersEl = document.getElementById("providers");
 const footerStatus = document.getElementById("footer-status");
+const footerHint = document.getElementById("footer-hint");
 const refreshClock = document.getElementById("refresh-clock");
+const refreshPulse = document.getElementById("refresh-pulse");
 const fixtureBadge = document.getElementById("fixture-badge");
 const providerTemplate = document.getElementById("provider-template");
 const windowTemplate = document.getElementById("window-template");
 const cursorBillTemplate = document.getElementById("cursor-bill-template");
 const balanceTemplate = document.getElementById("balance-template");
+const settingsForm = document.getElementById("settings-form");
+const settingsStatus = document.getElementById("settings-status");
+const viewDashboard = document.getElementById("view-dashboard");
+const viewSettings = document.getElementById("view-settings");
+const navLinks = document.querySelectorAll(".site-nav-link");
 
 function fmtPct(value) {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
@@ -56,11 +73,39 @@ function billTone(usedPercent) {
   return "ok";
 }
 
-function setBillMeter(root, usedPercent) {
-  const fill = root.querySelector(".bill-meter-fill");
-  const pct = usedPercent === null || usedPercent === undefined ? null : Math.min(100, Math.max(0, usedPercent));
-  fill.style.width = pct !== null ? `${pct}%` : "0%";
-  fill.dataset.tone = billTone(pct);
+function mergeUi(incoming) {
+  const base = structuredClone(DEFAULT_UI);
+  if (!incoming || typeof incoming !== "object") return base;
+  if (typeof incoming.refreshIntervalSec === "number") base.refreshIntervalSec = incoming.refreshIntervalSec;
+  if (incoming.pollIntervalSec && typeof incoming.pollIntervalSec === "object") {
+    base.pollIntervalSec = { ...base.pollIntervalSec, ...incoming.pollIntervalSec };
+  }
+  if (incoming.display?.claude) base.display.claude = { ...base.display.claude, ...incoming.display.claude };
+  if (incoming.display?.cursor) base.display.cursor = { ...base.display.cursor, ...incoming.display.cursor };
+  return base;
+}
+
+function claudeWindowOrder() {
+  const d = uiSettings.display.claude;
+  const out = [];
+  if (d.fiveHour) out.push("five_hour");
+  if (d.week) out.push("week");
+  return out;
+}
+
+function formatRefreshHint(sec) {
+  if (sec < 60) return `${sec}s`;
+  if (sec % 60 === 0) return `${sec / 60}m`;
+  return `${sec}s`;
+}
+
+function setRefreshInterval(sec) {
+  if (refreshTimer) clearInterval(refreshTimer);
+  const ms = Math.max(30, sec) * 1000;
+  refreshTimer = setInterval(refresh, ms);
+  const label = formatRefreshHint(sec);
+  footerHint.textContent = `Auto-refresh ${label}`;
+  refreshPulse.title = `Auto-refresh every ${label}`;
 }
 
 function renderWindow(parent, winId, win, providerId) {
@@ -80,7 +125,6 @@ function renderWindow(parent, winId, win, providerId) {
   fill.style.width = used !== null ? `${Math.min(100, Math.max(0, used))}%` : "0%";
   fill.dataset.tone = toneFor(used, win.status);
 
-  // OpenCode Go dashboard shows whole-number % like Cursor bill.
   const pctFmt = providerId === "opencode" || providerId === "cursor" ? fmtPctWhole : fmtPct;
   node.querySelector(".stat-used").textContent =
     win.status === "ok" ? pctFmt(win.usedPercent) : "Unavailable";
@@ -134,12 +178,7 @@ function renderBalance(parent, balance) {
   if (balance.currency === "USD") {
     const used = balance.used;
     const total = balance.total;
-    if (
-      used !== null &&
-      used !== undefined &&
-      total !== null &&
-      total !== undefined
-    ) {
+    if (used !== null && used !== undefined && total !== null && total !== undefined) {
       unit.textContent = "";
     } else {
       unit.textContent = "left";
@@ -154,19 +193,28 @@ function renderBalance(parent, balance) {
   parent.appendChild(node);
 }
 
-function renderCursorBilling(parent, billing, error) {
+function renderCursorBilling(parent, billing, error, display) {
   const node = cursorBillTemplate.content.cloneNode(true);
   const card = node.querySelector(".cursor-bill");
+  const show = display ?? uiSettings.display.cursor;
 
-  node.querySelector(".bill-plan").textContent = billing.planLabel || "Included in plan";
-  node.querySelector(".bill-total-pct").textContent = fmtPctWhole(billing.totalPercentUsed);
-  setBillMeter(node.querySelector(".bill-total"), billing.totalPercentUsed);
+  if (show.total) {
+    node.querySelector(".bill-plan").textContent = billing.planLabel || "Included in plan";
+    node.querySelector(".bill-total-pct").textContent = fmtPctWhole(billing.totalPercentUsed);
+    setBillMeter(node.querySelector(".bill-total"), billing.totalPercentUsed);
+  } else {
+    node.querySelector(".bill-total").hidden = true;
+    node.querySelector(".bill-plan").textContent = billing.planLabel || "Included in plan";
+  }
 
   const auto = billing.autoPercentUsed;
   const api = billing.apiPercentUsed;
   const summary = node.querySelector(".bill-summary-text");
-  if (auto !== null && api !== null) {
-    summary.textContent = `${fmtPctWhole(auto)} First-party models and ${fmtPctWhole(api)} API used`;
+  const summaryParts = [];
+  if (show.auto && auto !== null && auto !== undefined) summaryParts.push(`${fmtPctWhole(auto)} First-party models`);
+  if (show.api && api !== null && api !== undefined) summaryParts.push(`${fmtPctWhole(api)} API`);
+  if (summaryParts.length) {
+    summary.textContent = `${summaryParts.join(" and ")} used`;
   } else if (billing.displayMessage) {
     summary.textContent = billing.displayMessage;
   } else {
@@ -176,15 +224,30 @@ function renderCursorBilling(parent, billing, error) {
   const resetEl = node.querySelector(".bill-reset");
   resetEl.textContent = billing.resetsAtIso ? fmtReset(billing.resetsAtIso) : "";
 
-  node.querySelector(".bill-auto-pct").textContent = fmtPctWhole(auto);
-  setBillMeter(node.querySelector(".bill-auto"), auto);
-  node.querySelector(".bill-auto-note").textContent =
-    billing.autoNote || "Additional usage beyond limits consumes API quota or on-demand spend.";
+  const autoBucket = node.querySelector(".bill-auto");
+  const apiBucket = node.querySelector(".bill-api");
+  if (show.auto) {
+    node.querySelector(".bill-auto-pct").textContent = fmtPctWhole(auto);
+    setBillMeter(autoBucket, auto);
+    node.querySelector(".bill-auto-note").textContent =
+      billing.autoNote || "Additional usage beyond limits consumes API quota or on-demand spend.";
+  } else {
+    autoBucket.hidden = true;
+  }
 
-  node.querySelector(".bill-api-pct").textContent = fmtPctWhole(api);
-  setBillMeter(node.querySelector(".bill-api"), api);
-  node.querySelector(".bill-api-note").textContent =
-    billing.apiNote || "Additional usage beyond limits consumes on-demand spend.";
+  if (show.api) {
+    node.querySelector(".bill-api-pct").textContent = fmtPctWhole(api);
+    setBillMeter(apiBucket, api);
+    node.querySelector(".bill-api-note").textContent =
+      billing.apiNote || "Additional usage beyond limits consumes on-demand spend.";
+  } else {
+    apiBucket.hidden = true;
+  }
+
+  if (!show.auto && !show.api) {
+    node.querySelector(".bill-details").hidden = true;
+    node.querySelector(".bill-summary").hidden = true;
+  }
 
   const rem = node.querySelector(".bill-remaining");
   rem.textContent =
@@ -210,6 +273,13 @@ function renderCursorBilling(parent, billing, error) {
   parent.appendChild(node);
 }
 
+function setBillMeter(root, usedPercent) {
+  const fill = root.querySelector(".bill-meter-fill");
+  const pct = usedPercent === null || usedPercent === undefined ? null : Math.min(100, Math.max(0, usedPercent));
+  fill.style.width = pct !== null ? `${pct}%` : "0%";
+  fill.dataset.tone = billTone(pct);
+}
+
 function renderProvider(p) {
   const node = providerTemplate.content.cloneNode(true);
   node.querySelector(".provider-title").textContent = p.label;
@@ -220,23 +290,28 @@ function renderProvider(p) {
 
   if (p.provider === "cursor" && p.billing) {
     windowsEl.classList.add("windows--billing");
-    renderCursorBilling(windowsEl, p.billing, p.error);
+    renderCursorBilling(windowsEl, p.billing, p.error, uiSettings.display.cursor);
     if (p.error) errEl.hidden = true;
   } else {
     if (p.error) {
       errEl.textContent = p.error;
       errEl.hidden = false;
     }
-    if (p.balance) {
+    const showSpend = p.provider !== "claude" || uiSettings.display.claude.spend;
+    if (p.balance && showSpend) {
       windowsEl.classList.add("windows--balance");
       renderBalance(windowsEl, p.balance);
     }
-    // Skip empty window meters when provider is balance-only (e.g. OpenRouter).
+    const windowIds =
+      p.provider === "claude"
+        ? claudeWindowOrder()
+        : ["five_hour", "week", "month"];
     const showWindows =
       !p.balance ||
+      p.provider === "claude" ||
       Object.values(p.windows || {}).some((w) => w && w.status === "ok");
     if (showWindows) {
-      for (const winId of ["five_hour", "week", "month"]) {
+      for (const winId of windowIds) {
         const win = p.windows?.[winId];
         if (!win || win.status !== "ok") continue;
         renderWindow(windowsEl, winId, win, p.provider);
@@ -250,6 +325,11 @@ function renderAll(data) {
   providersEl.innerHTML = "";
   for (const p of data.providers) renderProvider(p);
   fixtureBadge.hidden = !data.fixture;
+  if (data.ui) {
+    uiSettings = mergeUi(data.ui);
+    setRefreshInterval(uiSettings.refreshIntervalSec);
+    populateSettingsForm();
+  }
 }
 
 function updateClock() {
@@ -273,9 +353,93 @@ async function refresh() {
   updateClock();
 }
 
-function start() {
+function populateSettingsForm() {
+  if (!settingsForm) return;
+  settingsForm.refreshIntervalSec.value = String(uiSettings.refreshIntervalSec);
+  settingsForm.pollClaudeSec.value = String(uiSettings.pollIntervalSec.claude ?? 300);
+  settingsForm.claudeFiveHour.checked = uiSettings.display.claude.fiveHour;
+  settingsForm.claudeWeek.checked = uiSettings.display.claude.week;
+  settingsForm.claudeSpend.checked = uiSettings.display.claude.spend;
+  settingsForm.cursorTotal.checked = uiSettings.display.cursor.total;
+  settingsForm.cursorAuto.checked = uiSettings.display.cursor.auto;
+  settingsForm.cursorApi.checked = uiSettings.display.cursor.api;
+}
+
+async function loadSettings() {
+  const res = await fetch("/api/settings", { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  uiSettings = mergeUi(data.ui);
+  populateSettingsForm();
+  setRefreshInterval(uiSettings.refreshIntervalSec);
+}
+
+function readSettingsFromForm() {
+  return {
+    refreshIntervalSec: Number(settingsForm.refreshIntervalSec.value),
+    pollIntervalSec: { claude: Number(settingsForm.pollClaudeSec.value) },
+    display: {
+      claude: {
+        fiveHour: settingsForm.claudeFiveHour.checked,
+        week: settingsForm.claudeWeek.checked,
+        spend: settingsForm.claudeSpend.checked,
+      },
+      cursor: {
+        total: settingsForm.cursorTotal.checked,
+        auto: settingsForm.cursorAuto.checked,
+        api: settingsForm.cursorApi.checked,
+      },
+    },
+  };
+}
+
+async function saveSettings(ev) {
+  ev.preventDefault();
+  settingsStatus.textContent = "Saving…";
+  try {
+    const ui = readSettingsFromForm();
+    const res = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ui }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    uiSettings = mergeUi(data.ui);
+    setRefreshInterval(uiSettings.refreshIntervalSec);
+    settingsStatus.textContent = "Saved";
+    await refresh();
+  } catch (err) {
+    settingsStatus.textContent = `Save failed: ${err.message}`;
+  }
+}
+
+function showView(name) {
+  const dashboard = name !== "settings";
+  viewDashboard.hidden = !dashboard;
+  viewDashboard.classList.toggle("view--active", dashboard);
+  viewSettings.hidden = dashboard;
+  viewSettings.classList.toggle("view--active", !dashboard);
+  for (const link of navLinks) {
+    link.classList.toggle("site-nav-link--active", link.dataset.view === name);
+  }
+}
+
+function syncViewFromHash() {
+  const view = location.hash === "#settings" ? "settings" : "dashboard";
+  showView(view);
+}
+
+async function start() {
+  try {
+    await loadSettings();
+  } catch {
+    setRefreshInterval(DEFAULT_UI.refreshIntervalSec);
+  }
+  syncViewFromHash();
+  window.addEventListener("hashchange", syncViewFromHash);
+  settingsForm?.addEventListener("submit", saveSettings);
   refresh();
-  setInterval(refresh, REFRESH_MS);
   setInterval(updateClock, 1000);
 }
 

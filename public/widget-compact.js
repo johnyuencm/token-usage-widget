@@ -78,6 +78,19 @@
     return rem !== null ? `$${rem} left` : null;
   }
 
+  const DEFAULT_DISPLAY = {
+    claude: { fiveHour: true, week: true, spend: true },
+    cursor: { total: true, auto: true, api: true },
+  };
+
+  function resolveDisplay(opts) {
+    const d = opts?.display ?? DEFAULT_DISPLAY;
+    return {
+      claude: { ...DEFAULT_DISPLAY.claude, ...(d.claude || {}) },
+      cursor: { ...DEFAULT_DISPLAY.cursor, ...(d.cursor || {}) },
+    };
+  }
+
   /** Short label for compact widget when providerLine would otherwise show "error". */
   function compactErrorLabel(err) {
     if (!err) return "error";
@@ -96,6 +109,7 @@
    */
   function providerLine(p, opts) {
     const nowMs = opts?.nowMs ?? Date.now();
+    const display = resolveDisplay(opts);
     const name =
       p.provider === "openai"
         ? "codex"
@@ -112,19 +126,20 @@
 
     if (p.provider === "cursor") {
       const b = p.billing;
+      const show = display.cursor;
       if (!b) {
         const m = p.windows?.month;
         const total = `${name}: total ${m?.status === "ok" ? pct(m.usedPercent) ?? "NA" : "NA"}`;
         return withCycleReset(total, m?.resetsAtIso, nowMs);
       }
       const parts = [];
-      if (b.totalPercentUsed !== null && b.totalPercentUsed !== undefined) {
+      if (show.total && b.totalPercentUsed !== null && b.totalPercentUsed !== undefined) {
         parts.push(`total ${pct(b.totalPercentUsed) ?? "NA"}`);
       }
-      if (b.autoPercentUsed !== null && b.autoPercentUsed !== undefined) {
+      if (show.auto && b.autoPercentUsed !== null && b.autoPercentUsed !== undefined) {
         parts.push(`first party ${pct(b.autoPercentUsed)}`);
       }
-      if (b.apiPercentUsed !== null && b.apiPercentUsed !== undefined) {
+      if (show.api && b.apiPercentUsed !== null && b.apiPercentUsed !== undefined) {
         parts.push(`API ${pct(b.apiPercentUsed)}`);
       }
       if (!parts.length) return `${name}: NA`;
@@ -138,17 +153,15 @@
     }
 
     if (p.provider === "claude" || p.provider === "kimi" || p.provider === "zai") {
-      const bits = windowBits(
-        [
-          ["5h", "five_hour"],
-          ["Week", "week"],
-          ["Month", "month"],
-        ],
-        p,
-        "used",
-        nowMs,
-      );
+      const claudeLabels = [];
       if (p.provider === "claude") {
+        if (display.claude.fiveHour) claudeLabels.push(["5h", "five_hour"]);
+        if (display.claude.week) claudeLabels.push(["Week", "week"]);
+      } else {
+        claudeLabels.push(["5h", "five_hour"], ["Week", "week"], ["Month", "month"]);
+      }
+      const bits = windowBits(claudeLabels, p, "used", nowMs);
+      if (p.provider === "claude" && display.claude.spend) {
         const spend = usdSpendBit(p.balance);
         if (spend) bits.push(spend);
       }
@@ -211,5 +224,5 @@
     return resets.join(" · ");
   }
 
-  return { providerLine, providerTitle, pct, winPart };
+  return { providerLine, providerTitle, pct, winPart, DEFAULT_DISPLAY, resolveDisplay };
 });
