@@ -492,6 +492,15 @@ test("claude usageFromBody prefers spend when windows are null", () => {
   assert.equal(usage.windows.five_hour.status, "unavailable");
 });
 
+test("claude nextClaudeBackoffMs doubles until the cap and honors Retry-After", () => {
+  assert.equal(claudeTest.nextClaudeBackoffMs(1), 60_000);
+  assert.equal(claudeTest.nextClaudeBackoffMs(2), 120_000);
+  assert.equal(claudeTest.nextClaudeBackoffMs(3), 240_000);
+  assert.equal(claudeTest.nextClaudeBackoffMs(10), claudeTest.CLAUDE_BACKOFF_MAX_MS);
+  assert.equal(claudeTest.nextClaudeBackoffMs(1, 180), 180_000);
+  assert.equal(claudeTest.nextClaudeBackoffMs(3, 60), 240_000);
+});
+
 test("claude fetchClaudeUsage skips API while rate-limit backoff active", async (t) => {
   claudeTest.resetCache();
   t.after(() => claudeTest.resetCache());
@@ -517,6 +526,147 @@ test("claude fetchClaudeUsage skips API while rate-limit backoff active", async 
   const second = await fetchClaudeUsage(cfg);
   assert.match(second.error ?? "", /rate limited \(retry in ~/i);
   assert.equal(calls, 1, "should not call Anthropic again during backoff");
+});
+
+test("claude usage 429s use exponential backoff after Retry-After expires", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+
+  let now = 1_700_000_000_000;
+  claudeTest.setNow(() => now);
+  t.after(() => claudeTest.setNow(null));
+
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ error: { type: "rate_limit_error" } }), { status: 429 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const cfg = bareConfig({ claude: { accessToken: "test-token" } });
+  const first = await fetchClaudeUsage(cfg);
+  assert.match(first.error ?? "", /rate limited \(retry in ~1m\)/i);
+  assert.equal(calls, 1);
+
+  now += 59_000;
+  await fetchClaudeUsage(cfg);
+  assert.equal(calls, 1, "still inside first backoff window");
+
+  now += 2_000;
+  const third = await fetchClaudeUsage(cfg);
+  assert.match(third.error ?? "", /rate limited \(retry in ~2m\)/i);
+  assert.equal(calls, 2);
+
+  now += 119_000;
+  await fetchClaudeUsage(cfg);
+  assert.equal(calls, 2, "still inside doubled backoff window");
+});
+
+test("claude successful usage fetch resets exponential backoff streak", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+
+  let now = 1_700_000_000_000;
+  claudeTest.setNow(() => now);
+  t.after(() => claudeTest.setNow(null));
+
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 2) {
+      return new Response(
+        JSON.stringify({
+          five_hour: { utilization: 10, resets_at: "2026-08-06T22:00:00.000Z" },
+          seven_day: { utilization: 20, resets_at: "2026-08-13T00:00:00.000Z" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ error: { type: "rate_limit_error" } }), { status: 429 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const cfg = bareConfig({ claude: { accessToken: "test-token" } });
+  await fetchClaudeUsage(cfg);
+  now += 61_000;
+  const ok = await fetchClaudeUsage(cfg);
+  assert.equal(ok.error, undefined);
+  assert.equal(ok.windows.five_hour.usedPercent, 10);
+
+  now += 1_000;
+  const held = await fetchClaudeUsage(cfg);
+  assert.equal(held.windows.five_hour.usedPercent, 10, "429s keep the last good payload");
+  assert.equal(calls, 3);
+
+  now += 59_000;
+  await fetchClaudeUsage(cfg);
+  assert.equal(calls, 3, "reset streak uses the 1m base window, not a doubled wait");
+
+  now += 2_000;
+  await fetchClaudeUsage(cfg);
+  assert.equal(calls, 4, "next attempt is allowed after the base backoff");
+});
+
+test("claude expired-token refresh 429s back off without calling usage", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+
+  let now = 1_700_000_000_000;
+  claudeTest.setNow(() => now);
+  t.after(() => claudeTest.setNow(null));
+
+  const home = await makeTempDir(t);
+  const credPath = path.join(home, ".claude", ".credentials.json");
+  await mkdir(path.dirname(credPath), { recursive: true });
+  await writeFile(
+    credPath,
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "stale-token",
+        refreshToken: "refresh-me",
+        expiresAt: now - 60_000,
+      },
+    }),
+    "utf8",
+  );
+
+  const originalHomedir = os.homedir;
+  os.homedir = () => home;
+  t.after(() => {
+    os.homedir = originalHomedir;
+  });
+
+  const urls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("/oauth/token")) {
+      return new Response(JSON.stringify({ error: "rate_limit_error" }), {
+        status: 429,
+        headers: { "retry-after": "60" },
+      });
+    }
+    throw new Error(`usage must not be called while refresh is rate limited: ${url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const first = await fetchClaudeUsage(bareConfig());
+  assert.match(first.error ?? "", /rate limited \(retry in ~1m\)/i);
+  assert.equal(urls.length, 1);
+  assert.match(urls[0] ?? "", /oauth\/token/);
+
+  const second = await fetchClaudeUsage(bareConfig());
+  assert.match(second.error ?? "", /rate limited \(retry in ~/i);
+  assert.equal(urls.length, 1, "must not refresh or hit usage during backoff");
 });
 
 test("claude tokenExpired respects skew before expiresAt", () => {

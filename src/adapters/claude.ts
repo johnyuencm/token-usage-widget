@@ -18,6 +18,8 @@ const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const TOKEN_EXPIRY_SKEW_MS = 60_000;
+export const CLAUDE_BACKOFF_BASE_MS = 60_000;
+export const CLAUDE_BACKOFF_MAX_MS = 60 * 60_000;
 
 interface ClaudeOAuthCreds {
   accessToken: string;
@@ -27,18 +29,60 @@ interface ClaudeOAuthCreds {
   fromFile: boolean;
 }
 
+interface BackoffState {
+  untilMs: number;
+  streak: number;
+}
+
 /** Soft cache so 429s don't wipe the last good spend/windows from the widget. */
 let cachedOk: ProviderUsage | null = null;
-let rateLimitedUntilMs = 0;
-let refreshRateLimitedUntilMs = 0;
+let usageBackoff: BackoffState = { untilMs: 0, streak: 0 };
+let refreshBackoff: BackoffState = { untilMs: 0, streak: 0 };
+let nowFn: () => number = () => Date.now();
 
-function rateLimitReason(untilMs: number, fetchedAt: string): string {
-  const waitMin = Math.max(1, Math.ceil((untilMs - Date.now()) / 60_000));
+function nowMs(): number {
+  return nowFn();
+}
+
+/** Wait after the Nth consecutive 429. Honors Retry-After when it is longer. */
+export function nextClaudeBackoffMs(streak: number, retryAfterSec?: number | null): number {
+  const n = Math.max(1, Math.floor(streak));
+  const exp = Math.min(
+    CLAUDE_BACKOFF_MAX_MS,
+    CLAUDE_BACKOFF_BASE_MS * 2 ** Math.min(n - 1, 20),
+  );
+  const headerMs =
+    typeof retryAfterSec === "number" && Number.isFinite(retryAfterSec) && retryAfterSec > 0
+      ? retryAfterSec * 1000
+      : 0;
+  return Math.min(CLAUDE_BACKOFF_MAX_MS, Math.max(exp, headerMs));
+}
+
+function clearBackoff(): BackoffState {
+  return { untilMs: 0, streak: 0 };
+}
+
+function apply429(state: BackoffState, retryAfterHeader: string | null): BackoffState {
+  const parsed = Number(retryAfterHeader);
+  const retryAfterSec = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  const streak = state.streak + 1;
+  return {
+    streak,
+    untilMs: nowMs() + nextClaudeBackoffMs(streak, retryAfterSec),
+  };
+}
+
+function inBackoff(state: BackoffState): boolean {
+  return nowMs() < state.untilMs;
+}
+
+function rateLimitReason(untilMs: number): string {
+  const waitMin = Math.max(1, Math.ceil((untilMs - nowMs()) / 60_000));
   return `Claude usage rate limited (retry in ~${waitMin}m)`;
 }
 
 function rateLimitUsage(untilMs: number, fetchedAt: string): ProviderUsage {
-  const reason = rateLimitReason(untilMs, fetchedAt);
+  const reason = rateLimitReason(untilMs);
   return {
     provider: "claude",
     label: "Claude",
@@ -46,6 +90,11 @@ function rateLimitUsage(untilMs: number, fetchedAt: string): ProviderUsage {
     fetchedAt,
     error: reason,
   };
+}
+
+function holdForBackoff(untilMs: number, fetchedAt: string): ProviderUsage {
+  if (cachedOk) return { ...cachedOk, fetchedAt };
+  return rateLimitUsage(untilMs, fetchedAt);
 }
 
 function claudeCredentialsPath(): string {
@@ -89,9 +138,9 @@ function readClaudeToken(cfg: Config): string | null {
   return readClaudeOAuth(cfg)?.accessToken ?? null;
 }
 
-function tokenExpired(expiresAt: number | null, nowMs = Date.now()): boolean {
+function tokenExpired(expiresAt: number | null, atMs = nowMs()): boolean {
   if (expiresAt === null) return false;
-  return nowMs >= expiresAt - TOKEN_EXPIRY_SKEW_MS;
+  return atMs >= expiresAt - TOKEN_EXPIRY_SKEW_MS;
 }
 
 function writeClaudeOAuthFile(
@@ -116,7 +165,7 @@ async function refreshClaudeAccessToken(refreshToken: string): Promise<{
   refreshToken: string;
   expiresAt: number;
 } | null> {
-  if (Date.now() < refreshRateLimitedUntilMs) return null;
+  if (inBackoff(refreshBackoff)) return null;
 
   const res = await fetch(TOKEN_URL, {
     method: "POST",
@@ -133,9 +182,7 @@ async function refreshClaudeAccessToken(refreshToken: string): Promise<{
   });
 
   if (res.status === 429) {
-    const retryAfter = Number(res.headers.get("retry-after"));
-    const waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 300;
-    refreshRateLimitedUntilMs = Date.now() + waitSec * 1000;
+    refreshBackoff = apply429(refreshBackoff, res.headers.get("retry-after"));
     return null;
   }
   if (!res.ok) return null;
@@ -146,11 +193,11 @@ async function refreshClaudeAccessToken(refreshToken: string): Promise<{
     typeof body.refresh_token === "string" ? body.refresh_token.trim() : refreshToken;
   const expiresIn = Number(body.expires_in);
   if (!accessToken) return null;
-  refreshRateLimitedUntilMs = 0;
+  refreshBackoff = clearBackoff();
   return {
     accessToken,
     refreshToken: nextRefresh,
-    expiresAt: Date.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 28_800) * 1000,
+    expiresAt: nowMs() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 28_800) * 1000,
   };
 }
 
@@ -319,16 +366,17 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
     };
   }
 
-  const now = Date.now();
-  if (now < rateLimitedUntilMs) {
-    if (cachedOk) return { ...cachedOk, fetchedAt };
-    return rateLimitUsage(rateLimitedUntilMs, fetchedAt);
+  if (tokenExpired(creds.expiresAt) && inBackoff(refreshBackoff)) {
+    return holdForBackoff(refreshBackoff.untilMs, fetchedAt);
+  }
+  if (inBackoff(usageBackoff)) {
+    return holdForBackoff(usageBackoff.untilMs, fetchedAt);
   }
 
   try {
     let res = await fetchUsageWithToken(creds.accessToken);
     if (res.status === 401 && creds.fromFile && creds.refreshToken && creds.credPath) {
-      const refreshBlocked = Date.now() < refreshRateLimitedUntilMs;
+      const refreshBlocked = inBackoff(refreshBackoff);
       const refreshed = refreshBlocked ? null : await refreshClaudeAccessToken(creds.refreshToken);
       if (refreshed) {
         writeClaudeOAuthFile(creds.credPath, refreshed);
@@ -340,8 +388,12 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
           fromFile: true,
         };
         res = await fetchUsageWithToken(creds.accessToken);
-      } else if (tokenExpired(creds.expiresAt)) {
-        const reason = authErrorReason(401, refreshBlocked);
+      } else if (inBackoff(refreshBackoff) || tokenExpired(creds.expiresAt)) {
+        if (inBackoff(refreshBackoff)) {
+          return holdForBackoff(refreshBackoff.untilMs, fetchedAt);
+        }
+        const reason = authErrorReason(401, false);
+        if (cachedOk) return { ...cachedOk, fetchedAt };
         return {
           provider: "claude",
           label: "Claude",
@@ -352,14 +404,11 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
       }
     }
     if (res.status === 429) {
-      const retryAfter = Number(res.headers.get("retry-after"));
-      const waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 180;
-      rateLimitedUntilMs = Date.now() + waitSec * 1000;
-      if (cachedOk) return { ...cachedOk, fetchedAt };
-      return rateLimitUsage(rateLimitedUntilMs, fetchedAt);
+      usageBackoff = apply429(usageBackoff, res.headers.get("retry-after"));
+      return holdForBackoff(usageBackoff.untilMs, fetchedAt);
     }
     if (!res.ok) {
-      const reason = authErrorReason(res.status, false);
+      const reason = authErrorReason(res.status, inBackoff(refreshBackoff));
       if (cachedOk) return { ...cachedOk, fetchedAt };
       return {
         provider: "claude",
@@ -372,7 +421,7 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
     const body = (await res.json()) as Record<string, unknown>;
     const usage = usageFromBody(body, fetchedAt);
     if (!usage.error) cachedOk = usage;
-    rateLimitedUntilMs = 0;
+    usageBackoff = clearBackoff();
     return usage;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -398,9 +447,15 @@ export const __test = {
   refreshClaudeAccessToken,
   ensureFreshClaudeToken,
   authErrorReason,
+  nextClaudeBackoffMs,
+  CLAUDE_BACKOFF_MAX_MS,
+  setNow(fn: (() => number) | null) {
+    nowFn = fn ?? (() => Date.now());
+  },
   resetCache() {
     cachedOk = null;
-    rateLimitedUntilMs = 0;
-    refreshRateLimitedUntilMs = 0;
+    usageBackoff = clearBackoff();
+    refreshBackoff = clearBackoff();
+    nowFn = () => Date.now();
   },
 };
