@@ -1,15 +1,17 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import path from "node:path";
 import os from "node:os";
+import { randomUUID } from "node:crypto";
+import {
+  copySqliteSidecars,
+  removeSqliteSidecars,
+  sqliteScalar,
+} from "../sqlite-scalar.js";
 import type {
   CursorBillingBreakdown,
   ProviderUsage,
   WindowId,
   WindowUsage,
 } from "../types.js";
-
-const execFileAsync = promisify(execFile);
 
 const DASHBOARD_URL =
   "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
@@ -173,19 +175,15 @@ export function resolveCursorStateDbPath(options: CursorPathOptions = {}): strin
 }
 
 async function sqliteGet(dbPath: string, sql: string): Promise<string> {
+  const tmp = path.join(os.tmpdir(), `tuw-cursor-${randomUUID()}.vscdb`);
   try {
-    const result = await execFileAsync("sqlite3", [dbPath, sql], {
-      windowsHide: true,
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-    });
-    return String(result.stdout).trim();
+    copySqliteSidecars(dbPath, tmp);
+    return await sqliteScalar(tmp, sql);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (/ENOENT|not recognized|not found/i.test(msg)) {
-      throw new Error("sqlite3 CLI not found on PATH (needed to read Cursor auth from state.vscdb).");
-    }
     throw new Error(`Failed to read Cursor state.vscdb: ${msg}`);
+  } finally {
+    removeSqliteSidecars(tmp);
   }
 }
 

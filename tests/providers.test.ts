@@ -11,6 +11,7 @@ import {
   readCursorAccessToken,
   resolveCursorStateDbPath,
 } from "../src/adapters/cursor.js";
+import { sqliteScalar } from "../src/sqlite-scalar.js";
 import { __test as kimiTest } from "../src/adapters/kimi.js";
 import {
   fetchOpenCodeUsage,
@@ -128,6 +129,83 @@ test("Cursor path and token overrides stay ahead of platform defaults", async ()
     }),
     "override-token",
   );
+});
+
+test("sqliteScalar reads via node:sqlite without calling sqlite3 CLI", async (t) => {
+  let DatabaseSync: new (file: string) => {
+    exec(sql: string): void;
+    prepare(sql: string): { run(...args: unknown[]): void };
+    close(): void;
+  };
+  try {
+    ({ DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof DatabaseSync });
+  } catch {
+    t.skip("node:sqlite not available");
+    return;
+  }
+  const dir = await makeTempDir(t);
+  const dbPath = path.join(dir, "state.vscdb");
+  const db = new DatabaseSync(dbPath);
+  db.exec("CREATE TABLE ItemTable (key TEXT, value TEXT)");
+  db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run(
+    "cursorAuth/accessToken",
+    "tok-from-node-sqlite",
+  );
+  db.close();
+
+  const cliCalls: string[] = [];
+  const value = await sqliteScalar(
+    dbPath,
+    "SELECT value FROM ItemTable WHERE key='cursorAuth/accessToken';",
+    {
+      execFile: async () => {
+        cliCalls.push("sqlite3");
+        throw new Error("ENOENT: sqlite3 not found");
+      },
+    },
+  );
+  assert.equal(value, "tok-from-node-sqlite");
+  assert.deepEqual(cliCalls, []);
+});
+
+test("sqliteScalar falls back to sqlite3 CLI when node:sqlite fails", async () => {
+  const value = await sqliteScalar("missing.vscdb", "SELECT 1;", {
+    nodeSqliteGet: () => {
+      throw new Error("node:sqlite unavailable");
+    },
+    execFile: async () => ({ stdout: "from-cli\n" }),
+  });
+  assert.equal(value, "from-cli");
+});
+
+test("Cursor reads access token from state.vscdb without sqlite3 CLI", async (t) => {
+  let DatabaseSync: new (file: string) => {
+    exec(sql: string): void;
+    prepare(sql: string): { run(...args: unknown[]): void };
+    close(): void;
+  };
+  try {
+    ({ DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof DatabaseSync });
+  } catch {
+    t.skip("node:sqlite not available");
+    return;
+  }
+  const dir = await makeTempDir(t);
+  const dbPath = path.join(dir, "state.vscdb");
+  const db = new DatabaseSync(dbPath);
+  db.exec("CREATE TABLE ItemTable (key TEXT, value TEXT)");
+  db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run(
+    "cursorAuth/accessToken",
+    "tok-from-vscdb",
+  );
+  db.close();
+
+  const token = await readCursorAccessToken({
+    platform: "win32",
+    homeDir: dir,
+    env: { CURSOR_STATE_DB: dbPath },
+  });
+  assert.equal(token, "tok-from-vscdb");
 });
 
 test("OpenCode reads auth from a standard macOS Firefox profile", async (t) => {

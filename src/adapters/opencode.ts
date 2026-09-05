@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
+import { sqliteScalar as sqliteScalarQuery } from "../sqlite-scalar.js";
 import { copyFile, readdir, readFile, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -252,11 +253,7 @@ export async function resolveWorkspaceId(
 }
 
 async function sqliteScalar(dbPath: string, sql: string): Promise<string> {
-  const { stdout } = await execFileAsync("sqlite3", [dbPath, sql], {
-    windowsHide: true,
-    encoding: "utf8",
-  });
-  return String(stdout).trim();
+  return sqliteScalarQuery(dbPath, sql);
 }
 
 function defaultCleanupErrorReporter(error: Error): void {
