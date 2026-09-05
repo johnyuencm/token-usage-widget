@@ -7,12 +7,14 @@
  */
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
-import {
-  SETUP_DEFAULTS_ENABLED,
-  type ProviderFlags,
-} from "../config.js";
-import { ALL_PROVIDER_IDS } from "../types.js";
+import { type ProviderFlags } from "../config.js";
 import { PROVIDER_META } from "../providers/registry.js";
+import {
+  detectLocalAgentFlags,
+  formatDefaultsLog,
+  resolveSetupDefaultFlags,
+  usedDefaultsFallback,
+} from "./detect-local.js";
 import {
   installLoginLaunch,
   type LoginLaunchSeams,
@@ -67,9 +69,8 @@ function askLine(rl: readline.Interface, question: string): Promise<string> {
 
 async function runDefaults(enableAll: boolean): Promise<void> {
   const existing = loadExisting();
-  const providers: ProviderFlags = enableAll
-    ? Object.fromEntries(ALL_PROVIDER_IDS.map((id) => [id, true])) as ProviderFlags
-    : { ...SETUP_DEFAULTS_ENABLED };
+  const detected = detectLocalAgentFlags();
+  const providers: ProviderFlags = resolveSetupDefaultFlags(enableAll, detected);
   const merged: Record<string, unknown> = {
     ...existing,
     providers,
@@ -78,16 +79,16 @@ async function runDefaults(enableAll: boolean): Promise<void> {
   ensureOpencodeStub(merged);
   writeConfig(merged);
   // eslint-disable-next-line no-console
-  console.log(
-    enableAll
-      ? "Defaults mode: all providers enabled (no secrets prompted)."
-      : "Defaults mode: openai + cursor enabled (others off until you opt in).",
-  );
+  console.log(formatDefaultsLog(enableAll, providers, usedDefaultsFallback(enableAll, detected)));
 }
 
 async function runInteractive(): Promise<void> {
   const existing = loadExisting();
   const providers: ProviderFlags = readProviderFlags(existing);
+  const localAgents = detectLocalAgentFlags();
+  const hasSavedProviders = Boolean(
+    existing.providers && typeof existing.providers === "object",
+  );
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   // eslint-disable-next-line no-console
@@ -97,17 +98,19 @@ async function runInteractive(): Promise<void> {
     for (const meta of PROVIDER_META) {
       // eslint-disable-next-line no-console
       console.log(`\n${meta.label} — ${meta.blurb}`);
+      const found = localAgents[meta.id] ? " [found on this machine]" : "";
       // eslint-disable-next-line no-console
-      console.log(`  detect: ${meta.detectHint}`);
-      const enable = await askYn(rl, `Enable ${meta.label}?`, providers[meta.id]);
+      console.log(`  detect: ${meta.detectHint}${found}`);
+      const defaultYes = hasSavedProviders ? providers[meta.id] : Boolean(localAgents[meta.id]);
+      const enable = await askYn(rl, `Enable ${meta.label}?`, defaultYes);
       providers[meta.id] = enable;
       if (!enable) continue;
 
       const secret = SECRET_BY_PROVIDER[meta.id];
       if (!secret) continue;
 
-      const detected = secret.detect();
-      const detectNote = secretDetectNote(secret, detected);
+      const secretDetected = secret.detect();
+      const detectNote = secretDetectNote(secret, secretDetected);
       const value = await askLine(rl, `${secret.prompt}${detectNote}: `);
       if (value) {
         applySecret(existing, secret.kind, value);

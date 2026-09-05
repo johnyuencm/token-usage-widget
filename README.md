@@ -45,7 +45,7 @@ A macOS screenshot is **not** available for this release — the maintainer has 
 
 ```bash
 npm i -g token-usage-widget   # first install downloads Electron (~100–150MB)
-tuw setup --defaults          # OpenAI Codex + Cursor (local login)
+tuw setup --defaults          # enable agents detected on this machine
 tuw                           # corner widget (Windows or macOS)
 ```
 
@@ -60,18 +60,18 @@ tuw start
 | ------- | ------------ |
 | `tuw` / `tuw widget` | Start the corner widget |
 | `tuw setup` | Interactive provider setup |
-| `tuw setup --defaults` | Enable OpenAI + Cursor only |
+| `tuw setup --defaults` | Enable detected local agents (Codex, Cursor, Claude, OpenCode) |
 | `tuw enable <provider>` | Enable one provider (secret prompt if needed) |
 | `tuw disable <provider>` | Disable one provider |
 | `tuw providers` | List provider on/off flags |
 | `tuw start` | Dashboard server only |
 | `tuw startup install` | Enable login Startup (platform-specific) |
 
-**Requirements:** Node.js 18+ (CI uses 22). Windows or macOS 13+ (Intel or Apple Silicon) for the Electron widget. `sqlite3` on `PATH` helps Cursor (and some OpenCode fallbacks). No DMG/EXE signing or notarization — distribution is the npm package + Electron runtime.
+**Requirements:** Node.js 18+ (CI uses 22). Windows or macOS 13+ (Intel or Apple Silicon) for the Electron widget. Cursor auth is read from the desktop `state.vscdb` via Node's built-in SQLite (or `sqlite3` on `PATH`). No DMG/EXE signing or notarization — distribution is the npm package + Electron runtime.
 
 Config lives under `%APPDATA%/token-usage-widget/config.json` (Windows) or `~/.config/token-usage-widget/config.json` (macOS/Linux). Override with `TOKEN_USAGE_WIDGET_CONFIG`. A one-time migrate copies a checkout `./config.json` into that location when missing.
 
-Already logged into Codex CLI and Cursor desktop? `tuw setup --defaults` is usually enough.
+Already logged into Codex, Cursor, Claude Code, or OpenCode on this machine? `tuw setup --defaults` detects those agents and enables them.
 
 ### From source (contributors)
 
@@ -127,7 +127,7 @@ tuw --help
 | Command                  | What it does                                     |
 | ------------------------ | ------------------------------------------------ |
 | `tuw setup` / `npm run setup` | Interactive: enable providers + optional secrets |
-| `tuw setup --defaults` / `npm run setup:defaults` | Enable **OpenAI + Cursor** only                  |
+| `tuw setup --defaults` / `npm run setup:defaults` | Enable **detected local agents** (Codex / Cursor / Claude / OpenCode) |
 | `tuw enable <id>` / `tuw disable <id>` | Flip one provider without full setup; refreshes widget |
 | `tuw providers`          | List current on/off flags                        |
 | `npm run setup:all`      | Enable all provider flags (no secret prompts)    |

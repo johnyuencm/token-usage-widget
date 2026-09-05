@@ -90,7 +90,7 @@ export const DEFAULT_ENABLED: ProviderFlags = {
   grok: false,
 };
 
-/** Sensible first-run picks for `npm run setup:defaults` (local auto-login providers). */
+/** Fallback for `npm run setup:defaults` when no local agents are detected. */
 export const SETUP_DEFAULTS_ENABLED: ProviderFlags = {
   openai: true,
   opencode: false,

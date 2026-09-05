@@ -16,7 +16,7 @@ function printHelp() {
 
 Commands:
   (default), widget     Start the corner widget
-  setup [flags]         Configure providers (--defaults, --all)
+  setup [flags]         Configure providers (--defaults detects local agents, --all)
   enable <provider>     Enable one provider (prompt secret if needed)
   disable <provider>    Disable one provider
   providers             List provider on/off flags
