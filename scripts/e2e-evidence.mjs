@@ -6,6 +6,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -195,8 +196,11 @@ async function main() {
     // Launch Electron against this already-running server (widget will reuse health)
     const electron = resolveInstalledElectron();
     lines.push(`- electron executable: \`${electron}\``);
+    // Isolate userData so a live product widget's single-instance lock cannot kill this check.
+    const evidenceUserData = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-e2e-"));
+    lines.push(`- electron userData: \`${evidenceUserData}\``);
     // Electron main strips USAGE_FIXTURE unless argv includes --fixture (product path stays live).
-    widgetProc = spawn(electron, [ROOT, "--fixture"], {
+    widgetProc = spawn(electron, [`--user-data-dir=${evidenceUserData}`, ROOT, "--fixture"], {
       cwd: ROOT,
       env: {
         ...evidenceElectronEnv(serverHandle.endpoint),
