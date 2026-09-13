@@ -122,6 +122,19 @@ test("cursor compact hides API when display pref off", () => {
   assert.equal(line, "cursor: total 10% first party 5%");
 });
 
+test("codex compact maps token-expired error to not signed in", () => {
+  const line = providerLine({
+    provider: "openai",
+    error: "Codex token expired. Run: `codex login`",
+    windows: {
+      five_hour: { status: "unavailable", usedPercent: null, remainingPercent: null },
+      week: { status: "unavailable", usedPercent: null, remainingPercent: null },
+      month: { status: "unavailable", usedPercent: null, remainingPercent: null },
+    },
+  });
+  assert.equal(line, "codex: not signed in");
+});
+
 test("codex compact appends short reset per ok window", () => {
   const now = Date.parse("2026-07-20T12:00:00.000Z");
   const weekReset = new Date(now + (3 * 24 * 3600 + 5 * 3600) * 1000).toISOString();

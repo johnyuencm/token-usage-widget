@@ -1,10 +1,17 @@
 import { getCodexStatus, CodexStatusError } from "codex-status-mcp";
 import type {
+  CodexStatusOptions,
   CodexStatusResult,
   RateLimitWindow,
   RateLimits,
 } from "codex-status-mcp";
 import type { ProviderUsage, WindowId, WindowUsage } from "../types.js";
+
+export type CodexStatusFn = (options?: CodexStatusOptions) => Promise<CodexStatusResult>;
+
+export interface OpenAIAdapterOptions {
+  getStatus?: CodexStatusFn;
+}
 
 const WINDOW_TARGETS: Record<WindowId, number> = {
   five_hour: 300,
@@ -103,9 +110,51 @@ function mapWindows(limits: RateLimits | null): Record<WindowId, WindowUsage> {
   return windows;
 }
 
-export async function fetchOpenAIUsage(): Promise<ProviderUsage> {
+function rpcMessageFromDetails(details: unknown): string | null {
+  if (!details || typeof details !== "object") return null;
+  const d = details as Record<string, unknown>;
+  for (const key of ["rateLimitsError", "accountError"]) {
+    const err = d[key];
+    if (!err || typeof err !== "object") continue;
+    const msg = (err as Record<string, unknown>).message;
+    if (typeof msg === "string" && msg.trim()) return msg;
+  }
+  if (typeof d.stderr === "string" && d.stderr.trim()) return d.stderr;
+  return null;
+}
+
+const TOKEN_EXPIRED_RE =
+  /token_expired|token is expired|refresh_token_reused|signing in again|401 unauthorized/i;
+
+/** Map CodexStatusError / JSON-RPC payloads to a compact operator-facing string. */
+export function formatCodexStatusError(err: unknown): string {
+  if (err instanceof CodexStatusError) {
+    const rpc = rpcMessageFromDetails(err.details);
+    const combined = rpc ? `${err.message}\n${rpc}` : err.message;
+    if (TOKEN_EXPIRED_RE.test(combined)) {
+      return "Codex token expired. Run: `codex login`";
+    }
+    if (rpc) {
+      const first = rpc.split("\n")[0]?.trim() || rpc.trim();
+      return first.length > 180 ? `${first.slice(0, 177)}...` : first;
+    }
+    return err.message;
+  }
+  if (err instanceof Error) {
+    if (TOKEN_EXPIRED_RE.test(err.message)) {
+      return "Codex token expired. Run: `codex login`";
+    }
+    return err.message;
+  }
+  return "Unknown error contacting Codex app-server.";
+}
+
+export async function fetchOpenAIUsage(
+  options: OpenAIAdapterOptions = {},
+): Promise<ProviderUsage> {
+  const getStatus = options.getStatus ?? getCodexStatus;
   try {
-    const result = await getCodexStatus({ includeEmail: false });
+    const result = await getStatus({ includeEmail: false });
     const limits = pickRateLimits(result);
     const windows = mapWindows(limits);
     return {
@@ -115,16 +164,11 @@ export async function fetchOpenAIUsage(): Promise<ProviderUsage> {
       fetchedAt: new Date().toISOString(),
     };
   } catch (err) {
-    const msg =
-      err instanceof CodexStatusError
-        ? err.message
-        : err instanceof Error
-          ? err.message
-          : "Unknown error contacting Codex app-server.";
+    const msg = formatCodexStatusError(err);
     const windows: Record<WindowId, WindowUsage> = {
-      five_hour: unavailable("Codex app-server unreachable."),
-      week: unavailable("Codex app-server unreachable."),
-      month: unavailable("Codex app-server unreachable."),
+      five_hour: unavailable(msg),
+      week: unavailable(msg),
+      month: unavailable(msg),
     };
     return {
       provider: "openai",
@@ -142,5 +186,6 @@ export const __test = {
   mapWindows,
   pickRateLimits,
   windowFromRateLimit,
+  formatCodexStatusError,
   WINDOW_LABELS,
 };

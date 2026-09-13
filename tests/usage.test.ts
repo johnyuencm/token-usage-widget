@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildFixtureResponse } from "../src/fixtures.js";
-import { __test as openaiTest } from "../src/adapters/openai.js";
+import { fetchOpenAIUsage, formatCodexStatusError, __test as openaiTest } from "../src/adapters/openai.js";
+import { CodexStatusError } from "codex-status-mcp";
 import { __test as opencodeTest } from "../src/adapters/opencode.js";
 import { __test as cursorTest } from "../src/adapters/cursor.js";
 import type { WindowId, WindowUsage } from "../src/types.js";
@@ -100,6 +101,46 @@ test("pickRateLimits prefers codex limitId over spark", () => {
   const picked = pickRateLimits(result);
   assert.equal(picked?.limitId, "codex");
   assert.equal(picked?.primary?.usedPercent, 50);
+});
+
+test("formatCodexStatusError maps expired ChatGPT token JSON-RPC to login hint", () => {
+  const err = new CodexStatusError("Codex app-server returned a JSON-RPC error.", {
+    accountError: undefined,
+    rateLimitsError: {
+      code: -32603,
+      message:
+        'failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized; body={"error":{"code":"token_expired"}}',
+    },
+  });
+  assert.equal(formatCodexStatusError(err), "Codex token expired. Run: `codex login`");
+});
+
+test("formatCodexStatusError maps refresh_token_reused stderr to login hint", () => {
+  const err = new CodexStatusError("Codex app-server returned a JSON-RPC error.", {
+    stderr: 'Failed to refresh token: 401 Unauthorized: {"code":"refresh_token_reused"}',
+  });
+  assert.equal(formatCodexStatusError(err), "Codex token expired. Run: `codex login`");
+});
+
+test("formatCodexStatusError keeps spawn/timeout messages", () => {
+  const err = new CodexStatusError("Timed out waiting for Codex app-server status data.");
+  assert.equal(formatCodexStatusError(err), "Timed out waiting for Codex app-server status data.");
+});
+
+test("fetchOpenAIUsage surfaces token-expired JSON-RPC as login hint", async () => {
+  const usage = await fetchOpenAIUsage({
+    getStatus: async () => {
+      throw new CodexStatusError("Codex app-server returned a JSON-RPC error.", {
+        rateLimitsError: {
+          code: -32603,
+          message: "Provided authentication token is expired. Please try signing in again.",
+        },
+      });
+    },
+  });
+  assert.equal(usage.error, "Codex token expired. Run: `codex login`");
+  assert.equal(usage.windows.week.status, "unavailable");
+  assert.match(usage.windows.week.reason ?? "", /Codex token expired/);
 });
 
 test("pickRateLimits falls back to top-level rateLimits when no codex key", () => {
