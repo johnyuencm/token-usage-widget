@@ -76,9 +76,10 @@ body {
 }
 
 .line {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   color: var(--ink);
 }
 

@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { providerLine, providerTitle } = require("../public/widget-compact.js");
+const { providerLine, providerTitle, wrapProviderLine, maxCharsForWidth } = require("../public/widget-compact.js");
 
 test("codex compact line uses remaining % (matches Codex Analytics)", () => {
   const line = providerLine({
@@ -168,6 +168,39 @@ test("cursor compact appends cycle reset countdown", () => {
     { nowMs: now },
   );
   assert.equal(line, "cursor: total 23% first party 13% API 99% · 12d");
+});
+
+test("maxCharsForWidth scales with widget width", () => {
+  assert.equal(maxCharsForWidth(320), 44);
+  assert.ok(maxCharsForWidth(220) < maxCharsForWidth(320));
+  assert.ok(maxCharsForWidth(220) >= 16);
+});
+
+test("wrapProviderLine keeps short lines on one row", () => {
+  assert.deepEqual(wrapProviderLine("codex: error", 40), ["codex: error"]);
+});
+
+test("wrapProviderLine splits long lines at word boundaries", () => {
+  const line = "cursor: total 26% first party 19% API 100% · 21d";
+  assert.deepEqual(wrapProviderLine(line, 36), [
+    "cursor: total 26% first party 19%",
+    "API 100% · 21d",
+  ]);
+});
+
+test("wrapProviderLine prefers comma breaks over orphaning the next word", () => {
+  const line = "opencode: rolling 0% (5h), week 100% (15h 53m), month 50% (27d 1h)";
+  const rows = wrapProviderLine(line, 32);
+  assert.equal(rows[0], "opencode: rolling 0% (5h),");
+  assert.match(rows[1], /^week /);
+});
+
+test("wrapProviderLine hard-splits a token longer than max chars", () => {
+  assert.deepEqual(wrapProviderLine("abcdefghijklmnopqrstuvwxyz", 12), [
+    "abcdefghijkl",
+    "mnopqrstuvwx",
+    "yz",
+  ]);
 });
 
 test("providerTitle uses human-readable dates, not raw ISO", () => {

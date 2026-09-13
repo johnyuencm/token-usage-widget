@@ -224,5 +224,55 @@
     return resets.join(" · ");
   }
 
-  return { providerLine, providerTitle, pct, winPart, DEFAULT_DISPLAY, resolveDisplay };
+  /**
+   * How many monospace characters fit in the widget body at `widthPx`.
+   * Default 320px widget → 44 chars, which is why the dense Cursor line wraps.
+   */
+  function maxCharsForWidth(widthPx, { padX = 16, fontSize = 11, advance = 0.62 } = {}) {
+    const width = Number(widthPx);
+    const usable = (Number.isFinite(width) ? width : 320) - padX;
+    const ch = fontSize * advance;
+    if (!(ch > 0)) return 42;
+    return Math.max(16, Math.floor(usable / ch));
+  }
+
+  /**
+   * Split a compact provider line so it stays within `maxChars` per row.
+   * Prefers breaks at spaces / commas / middle-dots; hard-splits a single token.
+   */
+  function wrapProviderLine(text, maxChars) {
+    const limit = Math.max(12, Math.floor(Number(maxChars) || 42));
+    const s = String(text ?? "").trim();
+    if (!s) return [""];
+    if (s.length <= limit) return [s];
+
+    const lines = [];
+    let rest = s;
+    const minBreak = Math.max(8, Math.floor(limit * 0.35));
+    while (rest.length > limit) {
+      const punct = Math.max(rest.lastIndexOf(",", limit), rest.lastIndexOf("·", limit));
+      const space = rest.lastIndexOf(" ", limit);
+      let idx;
+      if (punct >= minBreak) idx = punct + 1;
+      else if (space >= minBreak) idx = space;
+      else idx = limit;
+      let chunk = rest.slice(0, idx).trimEnd();
+      if (!chunk) chunk = rest.slice(0, limit);
+      lines.push(chunk);
+      rest = rest.slice(chunk.length).replace(/^[,\s·]+/, "");
+    }
+    if (rest) lines.push(rest);
+    return lines;
+  }
+
+  return {
+    providerLine,
+    providerTitle,
+    wrapProviderLine,
+    maxCharsForWidth,
+    pct,
+    winPart,
+    DEFAULT_DISPLAY,
+    resolveDisplay,
+  };
 });

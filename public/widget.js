@@ -1,10 +1,14 @@
 const bodyEl = document.getElementById("body");
 const statusEl = document.getElementById("status");
 const fixtureEl = document.getElementById("fixture");
-const { providerLine, providerTitle } = globalThis.TokenUsageCompact;
+const { providerLine, providerTitle, wrapProviderLine, maxCharsForWidth } =
+  globalThis.TokenUsageCompact;
 
 let uiSettings = null;
 let refreshTimer = null;
+let lastData = null;
+let lastWrapWidth = 0;
+let wrapResizeTimer = null;
 
 function escapeHtml(s) {
   return String(s)
@@ -26,17 +30,36 @@ function lineOpts() {
   return uiSettings?.display ? { display: uiSettings.display } : undefined;
 }
 
+function measureMaxChars() {
+  const width = document.documentElement.clientWidth || window.innerWidth || 320;
+  lastWrapWidth = width;
+  const probe = document.createElement("span");
+  probe.textContent = "0".repeat(20);
+  probe.style.cssText =
+    "position:absolute;left:-9999px;top:0;font:inherit;visibility:hidden;white-space:pre";
+  document.body.appendChild(probe);
+  const ch = probe.getBoundingClientRect().width / 20;
+  probe.remove();
+  if (!(ch > 0)) return maxCharsForWidth(width);
+  return Math.max(16, Math.floor((width - 16) / ch));
+}
+
+function lineHtml(p, opts, maxChars) {
+  const line = providerLine(p, opts);
+  const title = providerTitle(p);
+  const cls = p.error ? "line line--err" : "line";
+  const tip = title ? ` title="${escapeHtml(title)}"` : "";
+  const rows = wrapProviderLine(line, maxChars).map(escapeHtml).join("<br>");
+  return `<div class="${cls}"${tip}>${rows}</div>`;
+}
+
 function renderAll(data) {
+  lastData = data;
   if (data.ui) uiSettings = data.ui;
   const opts = lineOpts();
+  const maxChars = measureMaxChars();
   const lines = (data.providers || [])
-    .map((p) => {
-      const line = providerLine(p, opts);
-      const title = providerTitle(p);
-      const cls = p.error ? "line line--err" : "line";
-      const tip = title ? ` title="${escapeHtml(title)}"` : "";
-      return `<div class="${cls}"${tip}>${escapeHtml(line)}</div>`;
-    })
+    .map((p) => lineHtml(p, opts, maxChars))
     .join("");
 
   bodyEl.innerHTML = lines || `<div class="line">No providers</div>`;
@@ -86,6 +109,17 @@ document.getElementById("btn-dash").addEventListener("click", () => {
 });
 document.getElementById("btn-quit").addEventListener("click", () => {
   window.widgetBridge?.quit?.();
+});
+
+window.addEventListener("resize", () => {
+  if (!lastData) return;
+  const width = document.documentElement.clientWidth || window.innerWidth || 0;
+  if (Math.abs(width - lastWrapWidth) < 2) return;
+  if (wrapResizeTimer) clearTimeout(wrapResizeTimer);
+  wrapResizeTimer = setTimeout(() => {
+    wrapResizeTimer = null;
+    if (lastData) renderAll(lastData);
+  }, 50);
 });
 
 refresh();
