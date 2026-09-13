@@ -4,9 +4,11 @@ import type { ProviderId, ProviderUsage } from "../types.js";
 import { fetchProvider } from "./registry.js";
 
 const cache = new Map<ProviderId, { fetchedAtMs: number; usage: ProviderUsage }>();
+const inflight = new Map<ProviderId, Promise<ProviderUsage>>();
 
 export function resetPollCache(): void {
   cache.clear();
+  inflight.clear();
 }
 
 export async function fetchProviderThrottled(id: ProviderId, cfg: Config): Promise<ProviderUsage> {
@@ -16,9 +18,22 @@ export async function fetchProviderThrottled(id: ProviderId, cfg: Config): Promi
   if (hit && now - hit.fetchedAtMs < minMs) {
     return { ...hit.usage, fetchedAt: new Date().toISOString() };
   }
-  const usage = await fetchProvider(id, cfg);
-  cache.set(id, { fetchedAtMs: now, usage });
-  return usage;
+  const pending = inflight.get(id);
+  if (pending) {
+    const usage = await pending;
+    return { ...usage, fetchedAt: new Date().toISOString() };
+  }
+  const startedAt = now;
+  const p = fetchProvider(id, cfg)
+    .then((usage) => {
+      cache.set(id, { fetchedAtMs: startedAt, usage });
+      return usage;
+    })
+    .finally(() => {
+      inflight.delete(id);
+    });
+  inflight.set(id, p);
+  return p;
 }
 
 export async function fetchEnabledProvidersThrottled(cfg: Config): Promise<ProviderUsage[]> {
@@ -26,4 +41,4 @@ export async function fetchEnabledProvidersThrottled(cfg: Config): Promise<Provi
   return Promise.all(ids.map((id) => fetchProviderThrottled(id, cfg)));
 }
 
-export const __test = { resetPollCache, cache };
+export const __test = { resetPollCache, cache, inflight };
