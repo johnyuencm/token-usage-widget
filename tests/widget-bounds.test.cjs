@@ -8,8 +8,11 @@ const {
   saveBounds,
   cornerPlacement,
   resizeBottomRight,
+  clampBoundsToWorkArea,
+  restorePlacement,
   MIN_WIDTH,
   DEFAULT_WIDTH,
+  DEFAULT_HEIGHT,
 } = require("../desktop/widget-bounds.cjs");
 
 test("loadBounds returns null when missing", () => {
@@ -43,4 +46,44 @@ test("resizeBottomRight keeps bottom-right anchor", () => {
   assert.equal(next.height, 96);
   assert.equal(next.x, 100 + 320 - 280);
   assert.equal(next.y, 200 + 172 - 96);
+});
+
+test("saveBounds round-trips x/y with size", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "widget-bounds-"));
+  const saved = saveBounds(dir, { x: 40, y: 24, width: 240, height: 140 });
+  assert.deepEqual(saved, { x: 40, y: 24, width: 240, height: 140 });
+  assert.deepEqual(loadBounds(dir), { x: 40, y: 24, width: 240, height: 140 });
+});
+
+test("restorePlacement uses saved top-left instead of default corner", () => {
+  const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
+  const restored = restorePlacement(
+    { x: 40, y: 24, width: 240, height: 140 },
+    workArea,
+    16,
+    { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT },
+  );
+  assert.deepEqual(restored, { x: 40, y: 24, width: 240, height: 140 });
+});
+
+test("restorePlacement falls back to bottom-right when position is missing", () => {
+  const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
+  const restored = restorePlacement(
+    { width: 240, height: 140 },
+    workArea,
+    16,
+    { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT },
+  );
+  assert.deepEqual(restored, cornerPlacement({ width: 240, height: 140 }, workArea, 16));
+});
+
+test("clampBoundsToWorkArea pulls off-screen windows back into view", () => {
+  const clamped = clampBoundsToWorkArea(
+    { x: 5000, y: -40, width: 240, height: 140 },
+    { x: 0, y: 0, width: 1920, height: 1080 },
+  );
+  assert.equal(clamped.x, 1920 - 240);
+  assert.equal(clamped.y, 0);
+  assert.equal(clamped.width, 240);
+  assert.equal(clamped.height, 140);
 });

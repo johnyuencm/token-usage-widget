@@ -11,6 +11,8 @@ const {
   saveBounds,
   cornerPlacement,
   resizeBottomRight,
+  clampBoundsToWorkArea,
+  restorePlacement,
 } = require("./widget-bounds.cjs");
 
 const ICON_DIR = path.join(__dirname, "icons");
@@ -172,32 +174,60 @@ function runWidgetMain({
     healthTimer.unref?.();
   }
 
-  function cornerBounds() {
-    const dir = userDataDir();
-    const saved = dir ? loadBounds(dir) : null;
-    // Prefer persisted size; otherwise keep platform-policy geometry (320x172).
-    const size = saved || { width: policy.width, height: policy.height };
-    const display = selectDisplay(policy, screen);
-    return cornerPlacement(size, display.workArea, policy.margin);
+  function workAreaFor(bounds) {
+    if (bounds && typeof screen.getDisplayMatching === "function") {
+      try {
+        const display = screen.getDisplayMatching(bounds);
+        if (display?.workArea) return display.workArea;
+      } catch {
+        // Fall through to the platform default display.
+      }
+    }
+    return selectDisplay(policy, screen).workArea;
   }
 
-  function persistWindowSize() {
+  function windowPlacement() {
+    const dir = userDataDir();
+    const saved = dir ? loadBounds(dir) : null;
+    const fallback = { width: policy.width, height: policy.height };
+    if (platform === "darwin") {
+      const size = saved || fallback;
+      return cornerPlacement(size, selectDisplay(policy, screen).workArea, policy.margin);
+    }
+    return restorePlacement(saved, workAreaFor(saved), policy.margin, fallback);
+  }
+
+  function persistWindowBounds() {
     if (!win || applyingFit) return;
     if (typeof win.isDestroyed === "function" && win.isDestroyed()) return;
     if (typeof win.getBounds !== "function") return;
     const dir = userDataDir();
     if (!dir) return;
-    const b = win.getBounds();
-    saveBounds(dir, { width: b.width, height: b.height });
+    try {
+      const b = win.getBounds();
+      saveBounds(dir, { x: b.x, y: b.y, width: b.width, height: b.height });
+    } catch {
+      // Missing userData dir or a locked file must not take the widget down.
+    }
   }
 
-  function schedulePersistWindowSize() {
+  function schedulePersistWindowBounds() {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => {
       persistTimer = null;
-      persistWindowSize();
+      persistWindowBounds();
     }, 250);
     persistTimer.unref?.();
+  }
+
+  function persistSize(next) {
+    const dir = userDataDir();
+    if (!dir) return;
+    try {
+      saveBounds(dir, next);
+    } catch {
+      // ignore
+    }
   }
 
   function fitWindowToContent(contentHeight) {
@@ -206,17 +236,22 @@ function runWidgetMain({
     if (typeof win.getBounds !== "function") return;
     const h = Number(contentHeight);
     if (!Number.isFinite(h) || h <= 0) return;
-    const dir = userDataDir();
     const b = win.getBounds();
-    const next = resizeBottomRight(b, b.width, Math.ceil(h));
-    if (next.width === b.width && next.height === b.height) {
-      if (dir) saveBounds(dir, { width: next.width, height: next.height });
+    const next =
+      platform === "darwin"
+        ? resizeBottomRight(b, b.width, Math.ceil(h))
+        : clampBoundsToWorkArea(
+            { x: b.x, y: b.y, width: b.width, height: Math.ceil(h) },
+            workAreaFor(b),
+          );
+    if (next.width === b.width && next.height === b.height && next.x === b.x && next.y === b.y) {
+      persistSize(next);
       return;
     }
     applyingFit = true;
     try {
       win.setBounds(next);
-      if (dir) saveBounds(dir, { width: next.width, height: next.height });
+      persistSize(next);
     } finally {
       const release = setTimeout(() => {
         applyingFit = false;
@@ -303,13 +338,24 @@ function runWidgetMain({
 
   function reanchorWindow() {
     if (!win) return;
-    win.setBounds(cornerBounds());
+    if (platform === "darwin") {
+      win.setBounds(windowPlacement());
+      return;
+    }
+    if (typeof win.getBounds !== "function") return;
+    const b = win.getBounds();
+    const next = clampBoundsToWorkArea(b, workAreaFor(b));
+    if (next.x !== b.x || next.y !== b.y || next.width !== b.width || next.height !== b.height) {
+      win.setBounds(next);
+    }
   }
 
   function showWindow({ focus = false, inactive = false } = {}) {
     if (!win) createWindow();
     if (!win) return;
-    reanchorWindow();
+    // Darwin keeps the menu-bar utility pinned to the pointer display corner.
+    // Windows restores the last size/position and must not snap back to bottom-right.
+    if (platform === "darwin") reanchorWindow();
     if (inactive) win.showInactive();
     else win.show();
     if (focus) win.focus();
@@ -318,7 +364,7 @@ function runWidgetMain({
   function requestQuit() {
     if (app.isQuitting) return;
     app.isQuitting = true;
-    persistWindowSize();
+    persistWindowBounds();
     app.quit();
   }
 
@@ -326,7 +372,7 @@ function runWidgetMain({
     // Windows taskbar/window chrome uses the PNG set; Darwin menu-bar utility does not.
     const icon = platform === "win32" ? windowIconPath() : undefined;
     win = new BrowserWindow({
-      ...cornerBounds(),
+      ...windowPlacement(),
       frame: false,
       transparent: false,
       alwaysOnTop: true,
@@ -358,12 +404,20 @@ function runWidgetMain({
 
     win.on("resize", () => {
       if (applyingFit) return;
-      schedulePersistWindowSize();
+      schedulePersistWindowBounds();
+    });
+    win.on("move", () => {
+      if (applyingFit) return;
+      schedulePersistWindowBounds();
+    });
+    win.on("moved", () => {
+      if (applyingFit) return;
+      schedulePersistWindowBounds();
     });
 
     win.on("close", (event) => {
       if (app.isQuitting) return;
-      persistWindowSize();
+      persistWindowBounds();
       if (policy.nativeClose === "hide") {
         event.preventDefault();
         win?.hide();
@@ -399,7 +453,7 @@ function runWidgetMain({
       {
         label: "Hide widget",
         click: () => {
-          persistWindowSize();
+          persistWindowBounds();
           win?.hide();
         },
       },
@@ -420,7 +474,7 @@ function runWidgetMain({
     tray.setContextMenu(menu);
     tray.on("click", () => {
       if (win?.isVisible()) {
-        persistWindowSize();
+        persistWindowBounds();
         win.hide();
       } else showWindow();
     });
@@ -449,7 +503,7 @@ function runWidgetMain({
   }
 
   ipcMain.handle("widget:close", () => {
-    persistWindowSize();
+    persistWindowBounds();
     win?.hide();
   });
 
@@ -479,7 +533,7 @@ function runWidgetMain({
 
   app.on("before-quit", () => {
     app.isQuitting = true;
-    persistWindowSize();
+    persistWindowBounds();
     stopServer();
   });
 

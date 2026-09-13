@@ -6,6 +6,7 @@ const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const Module = require("node:module");
 const path = require("node:path");
+const os = require("node:os");
 const {
   resolveNodeBinary,
   assertNotElectronBinary,
@@ -20,6 +21,7 @@ const {
   selectDisplay,
   calculateCornerBounds,
 } = require("../desktop/platform-policy.cjs");
+const { saveBounds } = require("../desktop/widget-bounds.cjs");
 
 function createFakeChild() {
   const child = new EventEmitter();
@@ -49,6 +51,7 @@ async function loadMainHarness(
     platform = "win32",
     primaryDisplay = { workArea: { x: 0, y: 0, width: 1920, height: 1080 } },
     pointerDisplay = { workArea: { x: 1920, y: 24, width: 1440, height: 876 } },
+    userDataDir,
   } = {},
 ) {
   const mainPath = require.resolve("../desktop/main.cjs");
@@ -66,7 +69,9 @@ async function loadMainHarness(
   };
   app.getPath = (name) => {
     if (name === "appData") return "C:\\Users\\test\\AppData\\Roaming";
-    if (name === "userData") return "C:\\Users\\test\\AppData\\Roaming\\token-usage-widget";
+    if (name === "userData") {
+      return userDataDir || "C:\\Users\\test\\AppData\\Roaming\\token-usage-widget";
+    }
     return "C:\\tmp";
   };
   app.setAppUserModelId = () => {};
@@ -888,10 +893,52 @@ test("Win32 main preserves tray, primary placement, Spaces, and native close-to-
 
   harness.setPointerDisplay({ workArea: { x: 1920, y: 0, width: 2560, height: 1440 } });
   harness.trays[0].emit("click");
-  assert.deepEqual(window.boundsCalls.at(-1), { x: 1584, y: 892, width: 320, height: 172 });
+  assert.equal(window.isVisible(), true);
+  // Windows must not snap to the pointer display or the default corner on restore.
+  const lastBounds = window.boundsCalls.at(-1);
+  if (lastBounds) {
+    assert.equal(lastBounds.x, 1584);
+    assert.equal(lastBounds.y, 892);
+  }
   harness.ipcHandlers.get("widget:quit")();
   assert.equal(harness.app.quitCalls, 1);
   assert.equal(child.killCalls, 1);
+});
+
+test("Win32 main restores last size and top-left position instead of default corner", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
+  saveBounds(dir, { x: 40, y: 24, width: 240, height: 140 });
+  const harness = await loadMainHarness(
+    {
+      proc: null,
+      nodeBin: "C:\\nodejs\\node.exe",
+      logPath: "C:\\temp\\server.log",
+      reused: true,
+      owned: false,
+      endpoint: {
+        host: "127.0.0.1",
+        port: 4321,
+        baseUrl: "http://127.0.0.1:4321",
+      },
+    },
+    { platform: "win32", userDataDir: dir },
+  );
+  const window = harness.windows[0];
+  assert.deepEqual(
+    { x: window.options.x, y: window.options.y, width: window.options.width, height: window.options.height },
+    { x: 40, y: 24, width: 240, height: 140 },
+  );
+
+  window.emit("ready-to-show");
+  window.emit("close", { preventDefault: () => {} });
+  harness.trays[0].emit("click");
+  const lastBounds = window.boundsCalls.at(-1);
+  if (lastBounds) {
+    assert.equal(lastBounds.x, 40);
+    assert.equal(lastBounds.y, 24);
+    assert.equal(lastBounds.width, 240);
+    assert.equal(lastBounds.height, 140);
+  }
 });
 
 test("desktop main ignores second-instance until endpoint startup is ready", async () => {
