@@ -11,16 +11,21 @@ import { resetPollCache } from "./providers/poll-cache.js";
 export interface PublicSettingsResponse {
   ui: UiSettings;
   providers: Config["providers"];
-  configPath: string;
+  /** Local absolute config path. Only included for loopback callers (see options). */
+  configPath?: string;
 }
 
-export async function getPublicSettings(): Promise<PublicSettingsResponse> {
+export async function getPublicSettings(
+  options: { includeConfigPath?: boolean } = {},
+): Promise<PublicSettingsResponse> {
   const cfg = await loadConfig();
-  return {
+  const body: PublicSettingsResponse = {
     ui: cfg.ui,
     providers: cfg.providers,
-    configPath: configPath(),
   };
+  // The absolute path leaks the local username/home layout; keep it on loopback.
+  if (options.includeConfigPath !== false) body.configPath = configPath();
+  return body;
 }
 
 export async function saveUiSettingsPatch(body: unknown): Promise<UiSettings> {

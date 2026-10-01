@@ -126,7 +126,7 @@ export function loadExisting(): Record<string, unknown> {
 }
 
 export function defaultShell(): Config["server"] {
-  return { port: 4321, host: "127.0.0.1" };
+  return { port: 4321, host: "127.0.0.1", lanToken: null };
 }
 
 export function secretDetectNote(secret: SecretSpec, detected: string | null): string {

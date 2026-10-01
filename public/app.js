@@ -370,6 +370,12 @@ async function loadSettings() {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   uiSettings = mergeUi(data.ui);
+  if (data.configPath) {
+    // Local-only: the server omits this field on a non-loopback bind.
+    document.querySelectorAll("[data-config-path]").forEach((el) => {
+      el.textContent = data.configPath;
+    });
+  }
   populateSettingsForm();
   setRefreshInterval(uiSettings.refreshIntervalSec);
 }

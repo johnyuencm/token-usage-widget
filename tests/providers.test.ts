@@ -42,7 +42,7 @@ function bareConfig(overrides: Partial<Config> = {}): Config {
     zai: { apiKey: null },
     grok: { oauthToken: null },
     claude: { accessToken: null },
-    server: { port: 4321, host: "127.0.0.1" },
+    server: { port: 4321, host: "127.0.0.1", lanToken: null },
     ui: structuredClone(DEFAULT_UI),
     ...overrides,
   };
