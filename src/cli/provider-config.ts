@@ -7,9 +7,11 @@ import os from "node:os";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   DEFAULT_ENABLED,
+  SECRET_FILE_MODE,
   configPath,
   ensureConfigDir,
   migrateCwdConfigIfNeeded,
+  tightenConfigFileMode,
   type Config,
   type ProviderFlags,
 } from "../config.js";
@@ -115,6 +117,7 @@ export function loadExisting(): Record<string, unknown> {
   migrateCwdConfigIfNeeded();
   const p = configPath();
   if (!existsSync(p)) return {};
+  tightenConfigFileMode(p);
   try {
     return JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
   } catch {
@@ -157,7 +160,10 @@ export function applySecret(
 export function writeConfig(merged: Record<string, unknown>): void {
   ensureConfigDir();
   const p = configPath();
-  writeFileSync(p, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  writeFileSync(p, `${JSON.stringify(merged, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: SECRET_FILE_MODE,
+  });
   // eslint-disable-next-line no-console
   console.log(`Wrote ${p}`);
 }

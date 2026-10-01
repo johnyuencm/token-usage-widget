@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -164,6 +164,19 @@ export function exampleConfigPath(): string {
   return path.join(packageRoot(), "config.example.json");
 }
 
+/** Owner-only mode for files that can hold plaintext provider secrets. No-op on Windows. */
+export const SECRET_FILE_MODE = 0o600;
+
+/** Best-effort chmod of an existing config file so pre-0600 installs are tightened on next load. */
+export function tightenConfigFileMode(filePath: string): void {
+  if (process.platform === "win32") return; // Windows ACLs; POSIX mode bits are a no-op there.
+  try {
+    if (existsSync(filePath)) chmodSync(filePath, SECRET_FILE_MODE);
+  } catch {
+    // Best effort: a read-only mount or foreign-owned file must not break startup.
+  }
+}
+
 export async function loadConfig(): Promise<Config> {
   migrateCwdConfigIfNeeded();
   const cfg = defaultConfig();
@@ -174,6 +187,8 @@ export async function loadConfig(): Promise<Config> {
 
   for (const p of [exampleConfigPath(), configPath()]) {
     if (!existsSync(p)) continue;
+    // Existing configs from before 0600: tighten on load, then read.
+    if (p === configPath()) tightenConfigFileMode(p);
     try {
       const raw = await readFile(p, "utf8");
       const parsed = JSON.parse(raw) as Record<string, unknown>;
