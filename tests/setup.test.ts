@@ -6,6 +6,7 @@ import {
   secretDetectNote,
   SECRET_BY_PROVIDER,
   setProviderEnabled,
+  UNVALIDATED_SECRET_NOTE,
 } from "../src/cli/provider-config.js";
 import {
   enableProvider,
@@ -249,6 +250,8 @@ test("secretDetectNote is honest when nothing is detected", () => {
   const secret = SECRET_BY_PROVIDER.claude!;
   assert.match(secretDetectNote(secret, null), /none detected/);
   assert.match(secretDetectNote(secret, "tok"), /detected env\/file/);
+  // Setup persists pasted secrets without validating them; the note says so.
+  assert.match(UNVALIDATED_SECRET_NOTE, /unvalidated/);
 });
 
 test("ensureClaudeCredentials runs auth login then succeeds when detect finds token", () => {

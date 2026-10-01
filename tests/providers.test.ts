@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { __test as claudeTest, fetchClaudeUsage } from "../src/adapters/claude.js";
@@ -777,6 +777,62 @@ test("claude fetchClaudeUsage refreshes expired file token then loads usage", as
   assert.equal(saved.claudeAiOauth.accessToken, "fresh-token");
   assert.equal(saved.claudeAiOauth.refreshToken, "refresh-rotated");
   assert.ok(saved.claudeAiOauth.expiresAt > Date.now());
+});
+
+test("claude reports a distinct warning when the refreshed token cannot be saved", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+
+  const home = await makeTempDir(t);
+  const credPath = path.join(home, ".claude", ".credentials.json");
+  await mkdir(path.dirname(credPath), { recursive: true });
+  await writeFile(
+    credPath,
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "stale-token",
+        refreshToken: "refresh-me",
+        expiresAt: Date.now() - 60_000,
+      },
+    }),
+    "utf8",
+  );
+  // Block writeClaudeOAuthFile's tmp+rename: a directory at the tmp path makes
+  // the writeFileSync throw after the credentials file has been read.
+  await mkdir(`${credPath}.tmp`, { recursive: true });
+
+  const originalHomedir = os.homedir;
+  os.homedir = () => home;
+  const originalFetch = globalThis.fetch;
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (msg: unknown) => warnings.push(String(msg));
+  t.after(() => {
+    os.homedir = originalHomedir;
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+  });
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === "https://platform.claude.com/v1/oauth/token") {
+      return new Response(
+        JSON.stringify({ access_token: "fresh-token", refresh_token: "rotated", expires_in: 3600 }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({ five_hour: { utilization: 7, resets_at: "2026-08-06T22:00:00.000Z" } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  const usage = await fetchClaudeUsage(bareConfig());
+  assert.equal(usage.error, undefined);
+  assert.ok(
+    warnings.some((w) => /refresh succeeded but saving .* failed/.test(w)),
+    `expected a save-failure warning, got: ${JSON.stringify(warnings)}`,
+  );
 });
 
 test("poll cache serves cached provider payload within interval", async (t) => {

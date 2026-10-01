@@ -210,7 +210,14 @@ async function ensureFreshClaudeToken(cfg: Config): Promise<ClaudeOAuthCreds | n
   const refreshed = await refreshClaudeAccessToken(creds.refreshToken);
   if (!refreshed) return creds;
 
-  writeClaudeOAuthFile(creds.credPath, refreshed);
+  try {
+    writeClaudeOAuthFile(creds.credPath, refreshed);
+  } catch (err) {
+    // Token refreshed but could not be persisted: the next poll will need to
+    // refresh again. Say so distinctly instead of reporting a stale token.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`claude: refresh succeeded but saving ${creds.credPath} failed: ${msg}`);
+  }
   return {
     accessToken: refreshed.accessToken,
     refreshToken: refreshed.refreshToken,
@@ -379,7 +386,12 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
       const refreshBlocked = inBackoff(refreshBackoff);
       const refreshed = refreshBlocked ? null : await refreshClaudeAccessToken(creds.refreshToken);
       if (refreshed) {
-        writeClaudeOAuthFile(creds.credPath, refreshed);
+        try {
+          writeClaudeOAuthFile(creds.credPath, refreshed);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`claude: refresh succeeded but saving ${creds.credPath} failed: ${msg}`);
+        }
         creds = {
           accessToken: refreshed.accessToken,
           refreshToken: refreshed.refreshToken,

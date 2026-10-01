@@ -134,6 +134,9 @@ export function secretDetectNote(secret: SecretSpec, detected: string | null): s
   return " (none detected — paste token or Enter to skip)";
 }
 
+/** Shown after a pasted secret is stored: setup makes no validation call. */
+export const UNVALIDATED_SECRET_NOTE = "saved unvalidated — first poll will confirm it";
+
 export function applySecret(
   out: Record<string, unknown>,
   kind: SecretKind,
