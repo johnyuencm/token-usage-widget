@@ -65,3 +65,20 @@ posixTest("loadConfig tightens a pre-existing world-readable config to 0600", as
 
   assert.equal(fs.statSync(cfg).mode & 0o777, 0o600);
 });
+
+posixTest("a Claude token refresh keeps .credentials.json at 0600", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-perms-"));
+  tempDirs.push(dir);
+  const cred = path.join(dir, ".credentials.json");
+  fs.writeFileSync(cred, JSON.stringify({ claudeAiOauth: { accessToken: "old" } }), { mode: 0o600 });
+  const oldUmask = process.umask(0o022);
+  try {
+    const { __test } = await import("../src/adapters/claude.js");
+    __test.writeClaudeOAuthFile(cred, { accessToken: "new", refreshToken: "r", expiresAt: 1 });
+  } finally {
+    process.umask(oldUmask);
+  }
+
+  assert.equal(fs.statSync(cred).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(fs.readFileSync(cred, "utf8")).claudeAiOauth.accessToken, "new");
+});

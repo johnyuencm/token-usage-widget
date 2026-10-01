@@ -156,7 +156,9 @@ function writeClaudeOAuthFile(
     expiresAt: patch.expiresAt,
   };
   const tmp = `${credPath}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+  // Credentials: create the temp file 0600 so the rename never widens the original
+  // (Claude Code keeps ~/.claude/.credentials.json at 0600). No-op on Windows.
+  writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, credPath);
 }
 
@@ -458,6 +460,7 @@ export const __test = {
   tokenExpired,
   refreshClaudeAccessToken,
   ensureFreshClaudeToken,
+  writeClaudeOAuthFile,
   authErrorReason,
   nextClaudeBackoffMs,
   CLAUDE_BACKOFF_MAX_MS,
