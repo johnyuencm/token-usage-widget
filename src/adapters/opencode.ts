@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
 import { sqliteScalar as sqliteScalarQuery } from "../sqlite-scalar.js";
-import { copyFile, readdir, readFile, unlink } from "node:fs/promises";
+import { chmod, copyFile, readdir, readFile, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
@@ -197,6 +197,8 @@ export interface FirefoxFileSystem {
   exists(filePath: string): boolean;
   list(directoryPath: string): Promise<string[]>;
   copy(sourcePath: string, destinationPath: string): Promise<void>;
+  /** Tighten the copied file to owner-only (POSIX; no-op on Windows). */
+  chmod(filePath: string, mode: number): Promise<void>;
   remove(filePath: string): Promise<void>;
 }
 
@@ -213,6 +215,7 @@ const defaultFirefoxFs: FirefoxFileSystem = {
   exists: existsSync,
   list: (directoryPath) => readdir(directoryPath),
   copy: (sourcePath, destinationPath) => copyFile(sourcePath, destinationPath),
+  chmod: (filePath, mode) => chmod(filePath, mode),
   remove: (filePath) => unlink(filePath),
 };
 
@@ -308,9 +311,17 @@ export async function readFirefoxAuthCookie(
     const tmp = path.join(options.tempDir ?? os.tmpdir(), `ff-oc-${randomUUID()}.sqlite`);
     try {
       await fs.copy(dbPath, tmp);
+      if (process.platform !== "win32") {
+        try {
+          await fs.chmod(tmp, 0o600); // cookie copy holds an auth token
+        } catch {
+          // Best effort; a chmod failure must not lose the cookie read.
+        }
+      }
       if (fs.exists(`${dbPath}-wal`)) {
         try {
           await fs.copy(`${dbPath}-wal`, `${tmp}-wal`);
+          if (process.platform !== "win32") await fs.chmod(`${tmp}-wal`, 0o600);
         } catch {
           // WAL is optional; the copied main database may still contain the auth cookie.
         }

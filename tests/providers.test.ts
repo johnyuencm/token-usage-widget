@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { __test as claudeTest, fetchClaudeUsage } from "../src/adapters/claude.js";
@@ -11,7 +11,7 @@ import {
   readCursorAccessToken,
   resolveCursorStateDbPath,
 } from "../src/adapters/cursor.js";
-import { sqliteScalar } from "../src/sqlite-scalar.js";
+import { copySqliteSidecars, sqliteScalar } from "../src/sqlite-scalar.js";
 import { __test as kimiTest } from "../src/adapters/kimi.js";
 import {
   fetchOpenCodeUsage,
@@ -276,6 +276,40 @@ test("OpenCode uses a standard Win32 Firefox profile through the provider seam",
   assert.equal(usage.windows.month.usedPercent, 60);
 });
 
+test("Cursor and OpenCode token copies are created with mode 0600 on POSIX", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX mode bits only");
+    return;
+  }
+  const homeDir = await makeTempDir(t);
+  const tempDir = path.join(homeDir, "tmp");
+  await mkdir(tempDir, { recursive: true });
+
+  // Cursor: copySqliteSidecars is the function that creates the tmp db copy.
+  const cursorSrc = path.join(homeDir, "state.vscdb");
+  await writeFile(cursorSrc, "fixture-cursor-db");
+  const cursorCopy = path.join(tempDir, "cursor-copy.vscdb");
+  copySqliteSidecars(cursorSrc, cursorCopy);
+  assert.equal((await stat(cursorCopy)).mode & 0o777, 0o600);
+
+  // OpenCode: real copyFile + chmod path through the default fs.
+  const profilesRoot = path.join(homeDir, "Firefox", "Profiles");
+  const cookieDb = path.join(profilesRoot, "fixture.default-release", "cookies.sqlite");
+  await mkdir(path.dirname(cookieDb), { recursive: true });
+  await writeFile(cookieDb, "fixture-cookie");
+  let cookieMode = 0;
+  await readFirefoxAuthCookie({
+    profilesRoot,
+    tempDir,
+    // The copy is deleted in the finally block, so stat it while it exists.
+    sqliteGet: async (copied) => {
+      cookieMode = (await stat(copied)).mode & 0o777;
+      return "cookie";
+    },
+  });
+  assert.equal(cookieMode, 0o600);
+});
+
 test("OpenCode still reads Firefox cookies when the optional WAL cannot be copied", async () => {
   const profilesRoot = path.join("fixture", "Profiles");
   const dbPath = path.join(profilesRoot, "default-release", "cookies.sqlite");
@@ -289,6 +323,7 @@ test("OpenCode still reads Firefox cookies when the optional WAL cannot be copie
       copy: async (sourcePath) => {
         if (sourcePath.endsWith("-wal")) throw new Error("Firefox WAL is locked");
       },
+      chmod: async () => {},
       remove: async () => {},
     },
     sqliteGet: async () => "cookie-without-wal-copy",
@@ -336,6 +371,7 @@ test("OpenCode surfaces cleanup failures without hiding a discovered cookie", as
       copy: async (_sourcePath, destinationPath) => {
         temporaryFiles.add(destinationPath);
       },
+      chmod: async () => {},
       remove: async (filePath) => {
         if (filePath.endsWith("-shm")) throw new Error("fixture remove failure");
         temporaryFiles.delete(filePath);
