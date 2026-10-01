@@ -203,8 +203,25 @@ See [`config.example.json`](./config.example.json):
 - `providers.<id>` — `true` to poll and show
 - Provider secrets under `opencode` / `openrouter` / `kimi` / `zai` / `grok` / `claude`
 - `server.host` / `server.port` (`PORT` env overrides)
+- `server.lanToken` — API token, only used when `server.host` is not loopback
 
-`config.json` is **gitignored**. Do not commit secrets.
+`config.json` is **gitignored**. Do not commit secrets. It can hold plaintext
+provider keys, so it is written with mode `0600` on POSIX (an existing file is
+tightened on the next load). Windows applies ACLs instead; mode bits are a no-op.
+
+### Non-loopback bind
+
+The server binds `127.0.0.1` by default. If you set `server.host` to `0.0.0.0`
+or a LAN address, the API becomes reachable from your network, so:
+
+- a token is generated and stored as `server.lanToken` in `config.json`
+- `/api/*` requests from non-loopback peers must send
+  `Authorization: Bearer <server.lanToken>` (or `X-TUW-Token`)
+- the local widget/dashboard keeps working over loopback without the token
+- `/api/settings` stops returning `configPath` to non-loopback callers
+- startup prints a warning
+
+Set `TUW_LAN_TOKEN` to supply the token from the environment instead.
 
 ## Verify
 
@@ -238,8 +255,24 @@ token-usage-widget/
 
 - Binds to **localhost** by default
 - Adapters do not log tokens
-- `config.json` is gitignored
+- `config.json` is gitignored and written `0600` on POSIX (it can hold plaintext keys)
+- A non-loopback `server.host` requires an API token (see Configuration)
 - Treat undocumented provider endpoints as best-effort; rotate keys if you ever leak them
+
+## Updating
+
+There is **no auto-update channel** by design — nothing silently replaces the
+Electron/Chromium binary on disk. Updates are manual:
+
+```bash
+git pull            # source checkout
+npm ci
+npm run verify      # typecheck + build + tests + fixture e2e
+```
+
+Then restart the widget. For the npm install, `npm update -g token-usage-widget`
+(or reinstall) and restart. Run `npm run verify` before launching a pulled
+version so a broken update does not ship into your session.
 
 ## Limitations
 

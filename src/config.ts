@@ -1,10 +1,11 @@
-import { readFile } from "node:fs/promises";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { chmodSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import type { ProviderId, WindowId } from "./types.js";
 import { ALL_PROVIDER_IDS } from "./types.js";
+import { generateLanToken, isLoopbackHost } from "./server-auth.js";
 import { DEFAULT_UI, mergeUiSettings, type UiSettings } from "./ui-settings.js";
 
 const PACKAGE_NAME = "token-usage-widget";
@@ -72,6 +73,11 @@ export interface Config {
   server: {
     port: number;
     host: string;
+    /**
+     * Shared secret required by the API when `host` is not loopback. Null on
+     * the default loopback bind. Generated and persisted on first LAN start.
+     */
+    lanToken: string | null;
   };
   ui: UiSettings;
 }
@@ -115,7 +121,7 @@ function defaultConfig(): Config {
     zai: { apiKey: null },
     grok: { oauthToken: null },
     claude: { accessToken: null },
-    server: { port: 4321, host: "127.0.0.1" },
+    server: { port: 4321, host: "127.0.0.1", lanToken: null },
     ui: structuredClone(DEFAULT_UI),
   };
 }
@@ -164,6 +170,19 @@ export function exampleConfigPath(): string {
   return path.join(packageRoot(), "config.example.json");
 }
 
+/** Owner-only mode for files that can hold plaintext provider secrets. No-op on Windows. */
+export const SECRET_FILE_MODE = 0o600;
+
+/** Best-effort chmod of an existing config file so pre-0600 installs are tightened on next load. */
+export function tightenConfigFileMode(filePath: string): void {
+  if (process.platform === "win32") return; // Windows ACLs; POSIX mode bits are a no-op there.
+  try {
+    if (existsSync(filePath)) chmodSync(filePath, SECRET_FILE_MODE);
+  } catch {
+    // Best effort: a read-only mount or foreign-owned file must not break startup.
+  }
+}
+
 export async function loadConfig(): Promise<Config> {
   migrateCwdConfigIfNeeded();
   const cfg = defaultConfig();
@@ -174,6 +193,8 @@ export async function loadConfig(): Promise<Config> {
 
   for (const p of [exampleConfigPath(), configPath()]) {
     if (!existsSync(p)) continue;
+    // Existing configs from before 0600: tighten on load, then read.
+    if (p === configPath()) tightenConfigFileMode(p);
     try {
       const raw = await readFile(p, "utf8");
       const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -207,6 +228,7 @@ export async function loadConfig(): Promise<Config> {
       if (srv) {
         if (typeof srv.port === "number" && !envPort) cfg.server.port = srv.port;
         if (typeof srv.host === "string") cfg.server.host = srv.host;
+        cfg.server.lanToken = strOrNull(srv.lanToken) ?? cfg.server.lanToken;
       }
       if (parsed.ui) cfg.ui = mergeUiSettings(parsed.ui);
     } catch {
@@ -227,8 +249,44 @@ export async function loadConfig(): Promise<Config> {
     if (v !== null && !(typeof v === "number" && v > 0)) cfg.opencode.caps[key] = null;
   }
 
+  if (process.env.TUW_LAN_TOKEN?.trim()) cfg.server.lanToken = process.env.TUW_LAN_TOKEN.trim();
+
   void isWindowId;
   return cfg;
+}
+
+/**
+ * Resolve the API auth token for a config. Loopback stays open (the OS limits
+ * the socket). A non-loopback host with no stored token gets one generated and
+ * persisted into the 0600 config so it survives restarts.
+ */
+export async function resolveServerAuth(cfg: Config): Promise<string | null> {
+  if (isLoopbackHost(cfg.server.host)) return null;
+  if (cfg.server.lanToken) return cfg.server.lanToken;
+  const token = generateLanToken();
+  cfg.server.lanToken = token;
+  await persistLanToken(token);
+  return token;
+}
+
+/** Merge `server.lanToken` into config.json without dropping existing keys. */
+async function persistLanToken(token: string): Promise<void> {
+  const p = configPath();
+  let merged: Record<string, unknown> = {};
+  if (existsSync(p)) {
+    try {
+      merged = JSON.parse(await readFile(p, "utf8")) as Record<string, unknown>;
+    } catch {
+      merged = {};
+    }
+  }
+  const server = (merged.server as Record<string, unknown> | undefined) ?? {};
+  merged.server = { ...server, lanToken: token };
+  ensureConfigDir();
+  await writeFile(p, `${JSON.stringify(merged, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: SECRET_FILE_MODE,
+  });
 }
 
 export function isFixtureMode(): boolean {

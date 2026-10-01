@@ -7,9 +7,11 @@ import os from "node:os";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   DEFAULT_ENABLED,
+  SECRET_FILE_MODE,
   configPath,
   ensureConfigDir,
   migrateCwdConfigIfNeeded,
+  tightenConfigFileMode,
   type Config,
   type ProviderFlags,
 } from "../config.js";
@@ -115,6 +117,7 @@ export function loadExisting(): Record<string, unknown> {
   migrateCwdConfigIfNeeded();
   const p = configPath();
   if (!existsSync(p)) return {};
+  tightenConfigFileMode(p);
   try {
     return JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
   } catch {
@@ -123,13 +126,16 @@ export function loadExisting(): Record<string, unknown> {
 }
 
 export function defaultShell(): Config["server"] {
-  return { port: 4321, host: "127.0.0.1" };
+  return { port: 4321, host: "127.0.0.1", lanToken: null };
 }
 
 export function secretDetectNote(secret: SecretSpec, detected: string | null): string {
   if (detected) return " (detected env/file — press Enter to keep)";
   return " (none detected — paste token or Enter to skip)";
 }
+
+/** Shown after a pasted secret is stored: setup makes no validation call. */
+export const UNVALIDATED_SECRET_NOTE = "saved unvalidated — first poll will confirm it";
 
 export function applySecret(
   out: Record<string, unknown>,
@@ -157,7 +163,10 @@ export function applySecret(
 export function writeConfig(merged: Record<string, unknown>): void {
   ensureConfigDir();
   const p = configPath();
-  writeFileSync(p, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  writeFileSync(p, `${JSON.stringify(merged, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: SECRET_FILE_MODE,
+  });
   // eslint-disable-next-line no-console
   console.log(`Wrote ${p}`);
 }

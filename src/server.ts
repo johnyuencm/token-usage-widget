@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig, isFixtureMode, type ProviderFlags } from "./config.js";
+import { loadConfig, resolveServerAuth, isFixtureMode, type ProviderFlags } from "./config.js";
+import { authorizeApiRequest, isLoopbackHost } from "./server-auth.js";
 import { buildFixtureResponse } from "./fixtures.js";
 import { fetchEnabledProvidersThrottled } from "./providers/poll-cache.js";
 import { getPublicSettings, saveUiSettingsPatch } from "./settings-api.js";
@@ -51,10 +52,14 @@ async function gatherUsage(): Promise<UsageResponse> {
   };
 }
 
-async function handleApiSettings(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+async function handleApiSettings(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  includeConfigPath: boolean,
+): Promise<void> {
   if (req.method === "GET") {
     try {
-      const body = await getPublicSettings();
+      const body = await getPublicSettings({ includeConfigPath });
       sendJson(res, 200, body);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -132,13 +137,22 @@ async function serveStatic(req: http.IncomingMessage, res: http.ServerResponse):
   }
 }
 
-async function main(): Promise<void> {
-  const cfg = await loadConfig();
-  const server = http.createServer(async (req, res) => {
+export interface ServerAuthContext {
+  lanToken: string | null;
+  loopbackBind: boolean;
+}
+
+/** Exported for tests: the request handler without binding a socket. */
+export function createRequestHandler(auth: ServerAuthContext) {
+  return async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const pathname = url.pathname;
+    if (pathname.startsWith("/api/") && !authorizeApiRequest(req, auth.lanToken)) {
+      sendJson(res, 401, { error: "Unauthorized" });
+      return;
+    }
     if (pathname === "/api/settings") {
-      await handleApiSettings(req, res);
+      await handleApiSettings(req, res, auth.loopbackBind);
       return;
     }
     if (req.method !== "GET") {
@@ -155,7 +169,15 @@ async function main(): Promise<void> {
       return;
     }
     await serveStatic(req, res);
-  });
+  };
+}
+
+async function main(): Promise<void> {
+  const cfg = await loadConfig();
+  const lanToken = await resolveServerAuth(cfg);
+  const server = http.createServer(
+    createRequestHandler({ lanToken, loopbackBind: isLoopbackHost(cfg.server.host) }),
+  );
 
   server.on("error", (err) => {
     // eslint-disable-next-line no-console
@@ -166,6 +188,15 @@ async function main(): Promise<void> {
     const addr = `http://${cfg.server.host}:${cfg.server.port}`;
     // eslint-disable-next-line no-console
     console.log(`token-usage-dashboard listening on ${addr} (fixture=${isFixtureMode()})`);
+    if (!isLoopbackHost(cfg.server.host)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `WARNING: server.host=${cfg.server.host} is not loopback. The API (quota percentages, ` +
+          `balances) is reachable from your LAN. Requests must send ` +
+          `Authorization: Bearer <server.lanToken> (stored in config.json, mode 0600). ` +
+          `Remove the token header requirement by binding 127.0.0.1 instead.`,
+      );
+    }
   });
 
   const shutdown = (): void => {
@@ -176,8 +207,10 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
-main().catch((err) => {
-  // eslint-disable-next-line no-console
-  console.error("fatal:", err);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("fatal:", err);
+    process.exit(1);
+  });
+}

@@ -878,7 +878,20 @@ test("Win32 main preserves tray, primary placement, Spaces, and native close-to-
   assert.equal(harness.templateIcons.length, 0);
   assert.equal(harness.trays[0].icon, harness.legacyIcons[0]);
   assert.equal(harness.shortcutWrites.length, 1);
-  assert.match(harness.shortcutWrites[0].path, /Start Menu\\Programs\\Token Usage Widget\.lnk$/);
+  // The harness runs on the host OS, so path.join emits the host separator
+  // (POSIX CI runners give forward slashes). Assert against path.join's own
+  // output: same segments, separator-agnostic, still pinned to the exact path.
+  assert.equal(
+    harness.shortcutWrites[0].path,
+    path.join(
+      "C:\\Users\\test\\AppData\\Roaming",
+      "Microsoft",
+      "Windows",
+      "Start Menu",
+      "Programs",
+      "Token Usage Widget.lnk",
+    ),
+  );
   assert.match(harness.shortcutWrites[0].opts.target, /start-widget\.cmd$/);
   assert.match(harness.shortcutWrites[0].opts.icon, /icon\.ico$/);
   assert.equal(harness.shortcutWrites[0].opts.appUserModelId, "com.token-usage.widget");

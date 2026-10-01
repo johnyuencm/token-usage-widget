@@ -30,6 +30,7 @@ import {
   loadExisting,
   readProviderFlags,
   secretDetectNote,
+  UNVALIDATED_SECRET_NOTE,
   writeConfig,
   type EnsureClaudeDeps,
 } from "./provider-config.js";
@@ -114,6 +115,10 @@ async function runInteractive(): Promise<void> {
       const value = await askLine(rl, `${secret.prompt}${detectNote}: `);
       if (value) {
         applySecret(existing, secret.kind, value);
+        // No validation call is made before persisting; tell the user so a
+        // mistyped key is not mistaken for a provider outage later.
+        // eslint-disable-next-line no-console
+        console.log(`  ${UNVALIDATED_SECRET_NOTE}`);
       }
     }
   } finally {

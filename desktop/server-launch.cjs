@@ -292,7 +292,7 @@ async function ensureUsageServer(options = {}) {
 
   fileSystem.writeFileSync(logPath, `[${new Date().toISOString()}] starting server with ${nodeBin}\n`, "utf8");
   const logFd = fileSystem.openSync(logPath, "a");
-  const env = { ...mergedEnv, PORT: String(launchPort) };
+  const env = { ...mergedEnv, PORT: String(launchPort), USAGE_HOST: host };
   delete env.ELECTRON_RUN_AS_NODE;
   // Default launch is live; only keep fixture when explicitly requested.
   if (!wantFixture) delete env.USAGE_FIXTURE;

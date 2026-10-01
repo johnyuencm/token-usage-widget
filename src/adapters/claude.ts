@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { Config } from "../config.js";
@@ -156,7 +156,16 @@ function writeClaudeOAuthFile(
     expiresAt: patch.expiresAt,
   };
   const tmp = `${credPath}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+  // Credentials: keep the temp file 0600 so the rename never widens the original
+  // (Claude Code keeps ~/.claude/.credentials.json at 0600). `mode` only applies on
+  // create, so chmod too in case a stale .tmp survived a crash. No-op on Windows.
+  writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  try {
+    chmodSync(tmp, 0o600);
+  } catch {
+    // Mounts without POSIX modes (FAT, some network shares) throw here; saving the
+    // rotated refresh token matters more than the mode, so carry on.
+  }
   renameSync(tmp, credPath);
 }
 
@@ -210,7 +219,14 @@ async function ensureFreshClaudeToken(cfg: Config): Promise<ClaudeOAuthCreds | n
   const refreshed = await refreshClaudeAccessToken(creds.refreshToken);
   if (!refreshed) return creds;
 
-  writeClaudeOAuthFile(creds.credPath, refreshed);
+  try {
+    writeClaudeOAuthFile(creds.credPath, refreshed);
+  } catch (err) {
+    // Token refreshed but could not be persisted: the next poll will need to
+    // refresh again. Say so distinctly instead of reporting a stale token.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`claude: refresh succeeded but saving ${creds.credPath} failed: ${msg}`);
+  }
   return {
     accessToken: refreshed.accessToken,
     refreshToken: refreshed.refreshToken,
@@ -379,7 +395,12 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
       const refreshBlocked = inBackoff(refreshBackoff);
       const refreshed = refreshBlocked ? null : await refreshClaudeAccessToken(creds.refreshToken);
       if (refreshed) {
-        writeClaudeOAuthFile(creds.credPath, refreshed);
+        try {
+          writeClaudeOAuthFile(creds.credPath, refreshed);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`claude: refresh succeeded but saving ${creds.credPath} failed: ${msg}`);
+        }
         creds = {
           accessToken: refreshed.accessToken,
           refreshToken: refreshed.refreshToken,
@@ -446,6 +467,7 @@ export const __test = {
   tokenExpired,
   refreshClaudeAccessToken,
   ensureFreshClaudeToken,
+  writeClaudeOAuthFile,
   authErrorReason,
   nextClaudeBackoffMs,
   CLAUDE_BACKOFF_MAX_MS,

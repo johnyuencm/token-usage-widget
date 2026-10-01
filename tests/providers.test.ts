@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { __test as claudeTest, fetchClaudeUsage } from "../src/adapters/claude.js";
@@ -11,7 +11,7 @@ import {
   readCursorAccessToken,
   resolveCursorStateDbPath,
 } from "../src/adapters/cursor.js";
-import { sqliteScalar } from "../src/sqlite-scalar.js";
+import { copySqliteSidecars, sqliteScalar } from "../src/sqlite-scalar.js";
 import { __test as kimiTest } from "../src/adapters/kimi.js";
 import {
   fetchOpenCodeUsage,
@@ -42,7 +42,7 @@ function bareConfig(overrides: Partial<Config> = {}): Config {
     zai: { apiKey: null },
     grok: { oauthToken: null },
     claude: { accessToken: null },
-    server: { port: 4321, host: "127.0.0.1" },
+    server: { port: 4321, host: "127.0.0.1", lanToken: null },
     ui: structuredClone(DEFAULT_UI),
     ...overrides,
   };
@@ -276,6 +276,40 @@ test("OpenCode uses a standard Win32 Firefox profile through the provider seam",
   assert.equal(usage.windows.month.usedPercent, 60);
 });
 
+test("Cursor and OpenCode token copies are created with mode 0600 on POSIX", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX mode bits only");
+    return;
+  }
+  const homeDir = await makeTempDir(t);
+  const tempDir = path.join(homeDir, "tmp");
+  await mkdir(tempDir, { recursive: true });
+
+  // Cursor: copySqliteSidecars is the function that creates the tmp db copy.
+  const cursorSrc = path.join(homeDir, "state.vscdb");
+  await writeFile(cursorSrc, "fixture-cursor-db");
+  const cursorCopy = path.join(tempDir, "cursor-copy.vscdb");
+  copySqliteSidecars(cursorSrc, cursorCopy);
+  assert.equal((await stat(cursorCopy)).mode & 0o777, 0o600);
+
+  // OpenCode: real copyFile + chmod path through the default fs.
+  const profilesRoot = path.join(homeDir, "Firefox", "Profiles");
+  const cookieDb = path.join(profilesRoot, "fixture.default-release", "cookies.sqlite");
+  await mkdir(path.dirname(cookieDb), { recursive: true });
+  await writeFile(cookieDb, "fixture-cookie");
+  let cookieMode = 0;
+  await readFirefoxAuthCookie({
+    profilesRoot,
+    tempDir,
+    // The copy is deleted in the finally block, so stat it while it exists.
+    sqliteGet: async (copied) => {
+      cookieMode = (await stat(copied)).mode & 0o777;
+      return "cookie";
+    },
+  });
+  assert.equal(cookieMode, 0o600);
+});
+
 test("OpenCode still reads Firefox cookies when the optional WAL cannot be copied", async () => {
   const profilesRoot = path.join("fixture", "Profiles");
   const dbPath = path.join(profilesRoot, "default-release", "cookies.sqlite");
@@ -289,6 +323,7 @@ test("OpenCode still reads Firefox cookies when the optional WAL cannot be copie
       copy: async (sourcePath) => {
         if (sourcePath.endsWith("-wal")) throw new Error("Firefox WAL is locked");
       },
+      chmod: async () => {},
       remove: async () => {},
     },
     sqliteGet: async () => "cookie-without-wal-copy",
@@ -336,6 +371,7 @@ test("OpenCode surfaces cleanup failures without hiding a discovered cookie", as
       copy: async (_sourcePath, destinationPath) => {
         temporaryFiles.add(destinationPath);
       },
+      chmod: async () => {},
       remove: async (filePath) => {
         if (filePath.endsWith("-shm")) throw new Error("fixture remove failure");
         temporaryFiles.delete(filePath);
@@ -741,6 +777,62 @@ test("claude fetchClaudeUsage refreshes expired file token then loads usage", as
   assert.equal(saved.claudeAiOauth.accessToken, "fresh-token");
   assert.equal(saved.claudeAiOauth.refreshToken, "refresh-rotated");
   assert.ok(saved.claudeAiOauth.expiresAt > Date.now());
+});
+
+test("claude reports a distinct warning when the refreshed token cannot be saved", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+
+  const home = await makeTempDir(t);
+  const credPath = path.join(home, ".claude", ".credentials.json");
+  await mkdir(path.dirname(credPath), { recursive: true });
+  await writeFile(
+    credPath,
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "stale-token",
+        refreshToken: "refresh-me",
+        expiresAt: Date.now() - 60_000,
+      },
+    }),
+    "utf8",
+  );
+  // Block writeClaudeOAuthFile's tmp+rename: a directory at the tmp path makes
+  // the writeFileSync throw after the credentials file has been read.
+  await mkdir(`${credPath}.tmp`, { recursive: true });
+
+  const originalHomedir = os.homedir;
+  os.homedir = () => home;
+  const originalFetch = globalThis.fetch;
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (msg: unknown) => warnings.push(String(msg));
+  t.after(() => {
+    os.homedir = originalHomedir;
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+  });
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === "https://platform.claude.com/v1/oauth/token") {
+      return new Response(
+        JSON.stringify({ access_token: "fresh-token", refresh_token: "rotated", expires_in: 3600 }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({ five_hour: { utilization: 7, resets_at: "2026-08-06T22:00:00.000Z" } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  const usage = await fetchClaudeUsage(bareConfig());
+  assert.equal(usage.error, undefined);
+  assert.ok(
+    warnings.some((w) => /refresh succeeded but saving .* failed/.test(w)),
+    `expected a save-failure warning, got: ${JSON.stringify(warnings)}`,
+  );
 });
 
 test("poll cache serves cached provider payload within interval", async (t) => {
