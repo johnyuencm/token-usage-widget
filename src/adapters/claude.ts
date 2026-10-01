@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { Config } from "../config.js";
@@ -156,9 +156,11 @@ function writeClaudeOAuthFile(
     expiresAt: patch.expiresAt,
   };
   const tmp = `${credPath}.tmp`;
-  // Credentials: create the temp file 0600 so the rename never widens the original
-  // (Claude Code keeps ~/.claude/.credentials.json at 0600). No-op on Windows.
+  // Credentials: keep the temp file 0600 so the rename never widens the original
+  // (Claude Code keeps ~/.claude/.credentials.json at 0600). `mode` only applies on
+  // create, so chmod too in case a stale .tmp survived a crash. No-op on Windows.
   writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  chmodSync(tmp, 0o600);
   renameSync(tmp, credPath);
 }
 
