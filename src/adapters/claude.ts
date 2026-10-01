@@ -160,7 +160,12 @@ function writeClaudeOAuthFile(
   // (Claude Code keeps ~/.claude/.credentials.json at 0600). `mode` only applies on
   // create, so chmod too in case a stale .tmp survived a crash. No-op on Windows.
   writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  chmodSync(tmp, 0o600);
+  try {
+    chmodSync(tmp, 0o600);
+  } catch {
+    // Mounts without POSIX modes (FAT, some network shares) throw here; saving the
+    // rotated refresh token matters more than the mode, so carry on.
+  }
   renameSync(tmp, credPath);
 }
 
