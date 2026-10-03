@@ -13,6 +13,8 @@ const {
   resizeBottomRight,
   clampBoundsToWorkArea,
   restorePlacement,
+  MIN_WIDTH,
+  MIN_HEIGHT,
 } = require("./widget-bounds.cjs");
 
 const ICON_DIR = path.join(__dirname, "icons");
@@ -246,11 +248,14 @@ function runWidgetMain({
     const h = Number(contentHeight);
     if (!Number.isFinite(h) || h <= 0) return { locked: false };
     const b = win.getBounds();
+    // Wrapped rows at the 220px floor used to report a taller scroll height
+    // and bounce a minimized widget larger. Fit may shrink; it may not grow.
+    const fittedHeight = Math.min(b.height, Math.ceil(h));
     const next =
       platform === "darwin"
-        ? resizeBottomRight(b, b.width, Math.ceil(h))
+        ? resizeBottomRight(b, b.width, fittedHeight)
         : clampBoundsToWorkArea(
-            { x: b.x, y: b.y, width: b.width, height: Math.ceil(h) },
+            { x: b.x, y: b.y, width: b.width, height: fittedHeight },
             workAreaFor(b),
           );
     if (next.width === b.width && next.height === b.height && next.x === b.x && next.y === b.y) {
@@ -388,6 +393,8 @@ function runWidgetMain({
       alwaysOnTop: true,
       skipTaskbar: true,
       resizable: true,
+      minWidth: MIN_WIDTH,
+      minHeight: MIN_HEIGHT,
       minimizable: false,
       maximizable: false,
       fullscreenable: false,

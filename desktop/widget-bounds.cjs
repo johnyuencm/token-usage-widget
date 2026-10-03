@@ -4,9 +4,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const DEFAULT_WIDTH = 320;
-const DEFAULT_HEIGHT = 96;
+const DEFAULT_HEIGHT = 140;
 const MIN_WIDTH = 220;
-const MIN_HEIGHT = 72;
+// Compact floor from the minimized widget: header plus the provider rows,
+// short enough that wrapped lines scroll instead of stretching the window.
+const MIN_HEIGHT = 140;
 const MAX_WIDTH = 900;
 const MAX_HEIGHT = 640;
 

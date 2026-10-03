@@ -711,6 +711,8 @@ test("Darwin main applies menu-bar utility policy and reanchors every restore pa
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: true,
+    minWidth: 220,
+    minHeight: 140,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
@@ -891,6 +893,8 @@ test("Win32 main preserves tray, primary placement, Spaces, and native close-to-
     { x: window.options.x, y: window.options.y, width: window.options.width, height: window.options.height },
     { x: 1584, y: 892, width: 320, height: 172 },
   );
+  assert.equal(window.options.minWidth, 220);
+  assert.equal(window.options.minHeight, 140);
   assert.deepEqual(window.alwaysOnTopCalls, [[true, "screen-saver"]]);
   assert.deepEqual(window.workspaceCalls, [[true, { visibleOnFullScreen: true }]]);
   assert.equal(harness.legacyIcons.length, 1);
@@ -1003,18 +1007,31 @@ test("Win32 fit-content leaves a user-sized rectangle unchanged", async () => {
   assert.deepEqual(loadBounds(dir), saved);
 });
 
-test("Win32 fit-content hugs height until the user resizes", async () => {
+test("Win32 fit-content does not grow a minimized widget", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
   const harness = await loadMainHarness(idleWin32Server(), { platform: "win32", userDataDir: dir });
   const window = harness.windows[0];
   const before = window.getBounds();
-  const result = await harness.ipcHandlers.get("widget:fit-content")({}, { height: 240 });
+  const result = await harness.ipcHandlers.get("widget:fit-content")({}, { height: 510 });
   assert.deepEqual(result, { locked: false });
   const after = window.getBounds();
   assert.equal(after.width, before.width);
-  assert.equal(after.height, 240);
+  assert.equal(after.height, before.height);
+  assert.equal(window.boundsCalls.length, 0);
+});
+
+test("Win32 fit-content can still shrink toward content above the minimum", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
+  const harness = await loadMainHarness(idleWin32Server(), { platform: "win32", userDataDir: dir });
+  const window = harness.windows[0];
+  const before = window.getBounds();
+  const result = await harness.ipcHandlers.get("widget:fit-content")({}, { height: 150 });
+  assert.deepEqual(result, { locked: false });
+  const after = window.getBounds();
+  assert.equal(after.width, before.width);
+  assert.equal(after.height, 150);
   const loaded = loadBounds(dir);
-  assert.equal(loaded.height, 240);
+  assert.equal(loaded.height, 150);
   assert.equal(loaded.userSized, undefined);
   const raw = JSON.parse(fs.readFileSync(boundsFile(dir), "utf8"));
   assert.equal(Object.hasOwn(raw, "userSized"), false);

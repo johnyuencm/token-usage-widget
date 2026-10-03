@@ -11,6 +11,7 @@ const {
   clampBoundsToWorkArea,
   restorePlacement,
   MIN_WIDTH,
+  MIN_HEIGHT,
   DEFAULT_WIDTH,
   DEFAULT_HEIGHT,
 } = require("../desktop/widget-bounds.cjs");
@@ -22,30 +23,32 @@ test("loadBounds returns null when missing", () => {
 
 test("saveBounds round-trips and clamps", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "widget-bounds-"));
-  const saved = saveBounds(dir, { width: 400, height: 120 });
-  assert.deepEqual(saved, { width: 400, height: 120 });
-  assert.deepEqual(loadBounds(dir), { width: 400, height: 120 });
+  const saved = saveBounds(dir, { width: 400, height: 180 });
+  assert.deepEqual(saved, { width: 400, height: 180 });
+  assert.deepEqual(loadBounds(dir), { width: 400, height: 180 });
   const clamped = saveBounds(dir, { width: 10, height: 9000 });
   assert.equal(clamped.width, MIN_WIDTH);
   assert.ok(clamped.height <= 640);
+  const tooSmall = saveBounds(dir, { width: 400, height: 10 });
+  assert.equal(tooSmall.height, MIN_HEIGHT);
 });
 
 test("cornerPlacement pins bottom-right", () => {
   const p = cornerPlacement(
-    { width: DEFAULT_WIDTH, height: 96 },
+    { width: DEFAULT_WIDTH, height: 172 },
     { x: 0, y: 0, width: 1920, height: 1080 },
     16,
   );
   assert.equal(p.x, 1920 - DEFAULT_WIDTH - 16);
-  assert.equal(p.y, 1080 - 96 - 16);
+  assert.equal(p.y, 1080 - 172 - 16);
 });
 
 test("resizeBottomRight keeps bottom-right anchor", () => {
-  const next = resizeBottomRight({ x: 100, y: 200, width: 320, height: 172 }, 280, 96);
+  const next = resizeBottomRight({ x: 100, y: 200, width: 320, height: 172 }, 280, 150);
   assert.equal(next.width, 280);
-  assert.equal(next.height, 96);
+  assert.equal(next.height, 150);
   assert.equal(next.x, 100 + 320 - 280);
-  assert.equal(next.y, 200 + 172 - 96);
+  assert.equal(next.y, 200 + 172 - 150);
 });
 
 test("saveBounds round-trips x/y with size", () => {
