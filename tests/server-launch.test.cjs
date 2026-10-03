@@ -21,7 +21,7 @@ const {
   selectDisplay,
   calculateCornerBounds,
 } = require("../desktop/platform-policy.cjs");
-const { saveBounds } = require("../desktop/widget-bounds.cjs");
+const { saveBounds, loadBounds, boundsFile } = require("../desktop/widget-bounds.cjs");
 
 function createFakeChild() {
   const child = new EventEmitter();
@@ -55,6 +55,7 @@ async function loadMainHarness(
   } = {},
 ) {
   const mainPath = require.resolve("../desktop/main.cjs");
+  const fallbackUserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-userdata-"));
   const app = new EventEmitter();
   app.isQuitting = false;
   app.quitCalls = 0;
@@ -70,7 +71,7 @@ async function loadMainHarness(
   app.getPath = (name) => {
     if (name === "appData") return "C:\\Users\\test\\AppData\\Roaming";
     if (name === "userData") {
-      return userDataDir || "C:\\Users\\test\\AppData\\Roaming\\token-usage-widget";
+      return userDataDir || fallbackUserDataDir;
     }
     return "C:\\tmp";
   };
@@ -100,6 +101,12 @@ async function loadMainHarness(
       this.showInactiveCalls = 0;
       this.focusCalls = 0;
       this.hideCalls = 0;
+      this.bounds = {
+        x: options.x,
+        y: options.y,
+        width: options.width,
+        height: options.height,
+      };
       windows.push(this);
     }
     setAlwaysOnTop(...args) {
@@ -110,6 +117,18 @@ async function loadMainHarness(
     }
     setBounds(bounds) {
       this.boundsCalls.push(bounds);
+      this.bounds = {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+      };
+    }
+    getBounds() {
+      return { ...this.bounds };
+    }
+    isDestroyed() {
+      return false;
     }
     loadURL(url) {
       this.loadedUrl = url;
@@ -952,6 +971,68 @@ test("Win32 main restores last size and top-left position instead of default cor
     assert.equal(lastBounds.width, 240);
     assert.equal(lastBounds.height, 140);
   }
+});
+
+function idleWin32Server() {
+  return {
+    proc: null,
+    nodeBin: "C:\\nodejs\\node.exe",
+    logPath: "C:\\temp\\server.log",
+    reused: true,
+    owned: false,
+    endpoint: {
+      host: "127.0.0.1",
+      port: 4321,
+      baseUrl: "http://127.0.0.1:4321",
+    },
+  };
+}
+
+test("Win32 fit-content leaves a user-sized rectangle unchanged", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
+  const saved = { x: 40, y: 24, width: 240, height: 140, userSized: true };
+  saveBounds(dir, saved);
+  const harness = await loadMainHarness(idleWin32Server(), { platform: "win32", userDataDir: dir });
+  const window = harness.windows[0];
+  const before = window.getBounds();
+  const calls = window.boundsCalls.length;
+  const result = await harness.ipcHandlers.get("widget:fit-content")({}, { height: 400 });
+  assert.deepEqual(result, { locked: true });
+  assert.deepEqual(window.getBounds(), before);
+  assert.equal(window.boundsCalls.length, calls);
+  assert.deepEqual(loadBounds(dir), saved);
+});
+
+test("Win32 fit-content hugs height until the user resizes", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
+  const harness = await loadMainHarness(idleWin32Server(), { platform: "win32", userDataDir: dir });
+  const window = harness.windows[0];
+  const before = window.getBounds();
+  const result = await harness.ipcHandlers.get("widget:fit-content")({}, { height: 240 });
+  assert.deepEqual(result, { locked: false });
+  const after = window.getBounds();
+  assert.equal(after.width, before.width);
+  assert.equal(after.height, 240);
+  const loaded = loadBounds(dir);
+  assert.equal(loaded.height, 240);
+  assert.equal(loaded.userSized, undefined);
+  const raw = JSON.parse(fs.readFileSync(boundsFile(dir), "utf8"));
+  assert.equal(Object.hasOwn(raw, "userSized"), false);
+});
+
+test("Win32 manual resize locks fit-content and keeps the user rectangle", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
+  const harness = await loadMainHarness(idleWin32Server(), { platform: "win32", userDataDir: dir });
+  const window = harness.windows[0];
+  const userRect = { x: 120, y: 64, width: 360, height: 220 };
+  window.setBounds(userRect);
+  window.emit("will-resize");
+  const calls = window.boundsCalls.length;
+  const result = await harness.ipcHandlers.get("widget:fit-content")({}, { height: 90 });
+  assert.deepEqual(result, { locked: true });
+  assert.deepEqual(window.getBounds(), userRect);
+  assert.equal(window.boundsCalls.length, calls);
+  assert.deepEqual(loadBounds(dir), { ...userRect, userSized: true });
 });
 
 test("desktop main ignores second-instance until endpoint startup is ready", async () => {

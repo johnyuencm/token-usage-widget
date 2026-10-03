@@ -55,6 +55,18 @@ test("saveBounds round-trips x/y with size", () => {
   assert.deepEqual(loadBounds(dir), { x: 40, y: 24, width: 240, height: 140 });
 });
 
+test("saveBounds keeps userSized after a later save omits the flag", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "widget-bounds-"));
+  const saved = saveBounds(dir, { x: 40, y: 24, width: 240, height: 140, userSized: true });
+  assert.deepEqual(saved, { x: 40, y: 24, width: 240, height: 140, userSized: true });
+  assert.deepEqual(loadBounds(dir), { x: 40, y: 24, width: 240, height: 140, userSized: true });
+  const later = saveBounds(dir, { x: 48, y: 30, width: 260, height: 160 });
+  assert.deepEqual(later, { x: 48, y: 30, width: 260, height: 160, userSized: true });
+  assert.deepEqual(loadBounds(dir), { x: 48, y: 30, width: 260, height: 160, userSized: true });
+  const raw = JSON.parse(fs.readFileSync(path.join(dir, "widget-bounds.json"), "utf8"));
+  assert.equal(raw.userSized, true);
+});
+
 test("restorePlacement uses saved top-left instead of default corner", () => {
   const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
   const restored = restorePlacement(

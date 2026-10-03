@@ -27,7 +27,7 @@ function readFinite(n) {
 
 /**
  * @param {string} userDataDir
- * @returns {{ width: number, height: number, x?: number, y?: number } | null}
+ * @returns {{ width: number, height: number, x?: number, y?: number, userSized?: true } | null}
  */
 function loadBounds(userDataDir) {
   try {
@@ -44,6 +44,7 @@ function loadBounds(userDataDir) {
       out.x = x;
       out.y = y;
     }
+    if (j.userSized === true) out.userSized = true;
     return out;
   } catch {
     return null;
@@ -52,7 +53,7 @@ function loadBounds(userDataDir) {
 
 /**
  * @param {string} userDataDir
- * @param {{ width?: number, height?: number, x?: number, y?: number }} size
+ * @param {{ width?: number, height?: number, x?: number, y?: number, userSized?: boolean }} size
  */
 function saveBounds(userDataDir, size) {
   const prev = loadBounds(userDataDir) || { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
@@ -66,6 +67,7 @@ function saveBounds(userDataDir, size) {
     next.x = x;
     next.y = y;
   }
+  if (size.userSized === true || prev.userSized === true) next.userSized = true;
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.writeFileSync(boundsFile(userDataDir), `${JSON.stringify(next)}\n`, "utf8");
   return next;

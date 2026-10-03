@@ -18,12 +18,23 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
+function applyUserSizedClass(result) {
+  if (!result || typeof result.locked !== "boolean") return;
+  document.documentElement.classList.toggle("user-sized", result.locked);
+}
+
 function fitToContent() {
   requestAnimationFrame(() => {
     const root = document.documentElement;
     const height = Math.ceil(Math.max(root.scrollHeight, root.getBoundingClientRect().height));
-    window.widgetBridge?.fitContent?.({ height });
+    const pending = window.widgetBridge?.fitContent?.({ height });
+    Promise.resolve(pending).then(applyUserSizedClass).catch(() => {});
   });
+}
+
+function probeUserSized() {
+  const pending = window.widgetBridge?.fitContent?.({ probe: true });
+  Promise.resolve(pending).then(applyUserSizedClass).catch(() => {});
 }
 
 function lineOpts() {
@@ -53,7 +64,7 @@ function lineHtml(p, opts, maxChars) {
   return `<div class="${cls}"${tip}>${rows}</div>`;
 }
 
-function renderAll(data) {
+function renderAll(data, { fit = true } = {}) {
   lastData = data;
   if (data.ui) uiSettings = data.ui;
   const opts = lineOpts();
@@ -67,7 +78,7 @@ function renderAll(data) {
   const t = data.fetchedAt ? new Date(data.fetchedAt).toLocaleTimeString() : "";
   statusEl.textContent = t ? `↻ ${t}` : "";
   statusEl.classList.remove("error");
-  fitToContent();
+  if (fit) fitToContent();
   scheduleRefresh();
 }
 
@@ -112,13 +123,14 @@ document.getElementById("btn-quit").addEventListener("click", () => {
 });
 
 window.addEventListener("resize", () => {
-  if (!lastData) return;
-  const width = document.documentElement.clientWidth || window.innerWidth || 0;
-  if (Math.abs(width - lastWrapWidth) < 2) return;
   if (wrapResizeTimer) clearTimeout(wrapResizeTimer);
   wrapResizeTimer = setTimeout(() => {
     wrapResizeTimer = null;
-    if (lastData) renderAll(lastData);
+    const width = document.documentElement.clientWidth || window.innerWidth || 0;
+    if (lastData && Math.abs(width - lastWrapWidth) >= 2) {
+      renderAll(lastData, { fit: false });
+    }
+    probeUserSized();
   }, 50);
 });
 

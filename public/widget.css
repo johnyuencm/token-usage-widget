@@ -85,6 +85,18 @@ body {
 
 .line--err { color: var(--danger); }
 
+html.user-sized,
+html.user-sized body {
+  height: 100%;
+  overflow: hidden;
+}
+
+html.user-sized .body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .foot {
   display: flex;
   align-items: center;

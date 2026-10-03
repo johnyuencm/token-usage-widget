@@ -55,6 +55,11 @@ function runWidgetMain({
   const MAX_REVIVE_FAILURES = 12;
   /** Skip persisting while applying programmatic content-fit. */
   let applyingFit = false;
+  /**
+   * Sticky once the user drags a corner. Electron emits will-resize/resized only
+   * for that manual resize, never for setBounds, so content-fit cannot set it.
+   */
+  let userSized = false;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let persistTimer = null;
 
@@ -189,6 +194,7 @@ function runWidgetMain({
   function windowPlacement() {
     const dir = userDataDir();
     const saved = dir ? loadBounds(dir) : null;
+    if (saved?.userSized) userSized = true;
     const fallback = { width: policy.width, height: policy.height };
     if (platform === "darwin") {
       const size = saved || fallback;
@@ -205,7 +211,9 @@ function runWidgetMain({
     if (!dir) return;
     try {
       const b = win.getBounds();
-      saveBounds(dir, { x: b.x, y: b.y, width: b.width, height: b.height });
+      const payload = { x: b.x, y: b.y, width: b.width, height: b.height };
+      if (userSized) payload.userSized = true;
+      saveBounds(dir, payload);
     } catch {
       // Missing userData dir or a locked file must not take the widget down.
     }
@@ -231,11 +239,12 @@ function runWidgetMain({
   }
 
   function fitWindowToContent(contentHeight) {
-    if (!win) return;
-    if (typeof win.isDestroyed === "function" && win.isDestroyed()) return;
-    if (typeof win.getBounds !== "function") return;
+    if (userSized) return { locked: true };
+    if (!win) return { locked: false };
+    if (typeof win.isDestroyed === "function" && win.isDestroyed()) return { locked: false };
+    if (typeof win.getBounds !== "function") return { locked: false };
     const h = Number(contentHeight);
-    if (!Number.isFinite(h) || h <= 0) return;
+    if (!Number.isFinite(h) || h <= 0) return { locked: false };
     const b = win.getBounds();
     const next =
       platform === "darwin"
@@ -246,7 +255,7 @@ function runWidgetMain({
           );
     if (next.width === b.width && next.height === b.height && next.x === b.x && next.y === b.y) {
       persistSize(next);
-      return;
+      return { locked: false };
     }
     applyingFit = true;
     try {
@@ -258,6 +267,7 @@ function runWidgetMain({
       }, 0);
       release.unref?.();
     }
+    return { locked: false };
   }
 
   function iconPath(name) {
@@ -414,6 +424,12 @@ function runWidgetMain({
       if (applyingFit) return;
       schedulePersistWindowBounds();
     });
+    const noteUserResize = () => {
+      userSized = true;
+      persistWindowBounds();
+    };
+    win.on("will-resize", noteUserResize);
+    win.on("resized", noteUserResize);
 
     win.on("close", (event) => {
       if (app.isQuitting) return;
@@ -514,8 +530,10 @@ function runWidgetMain({
   ipcMain.handle("widget:ensure-server", async () => reviveIfNeeded());
 
   ipcMain.handle("widget:fit-content", (_evt, payload) => {
-    const height = payload && typeof payload === "object" ? payload.height : payload;
-    fitWindowToContent(height);
+    const obj = payload && typeof payload === "object" ? payload : null;
+    if (obj?.probe === true) return { locked: userSized };
+    const height = obj ? obj.height : payload;
+    return fitWindowToContent(height);
   });
 
   ipcMain.handle("widget:quit", requestQuit);
