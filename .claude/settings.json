@@ -1,0 +1,42 @@
+{
+  "enabledPlugins": {
+    "caveman@caveman": true,
+    "mattpocock-skills@mattpocock": true,
+    "open-code-review@open-code-review": true,
+    "ponytail@ponytail": true,
+    "ralph-loop@claude-plugins-official": true,
+    "ycm-harness@johnyuencm-harness": true
+  },
+  "extraKnownMarketplaces": {
+    "caveman": {
+      "source": {
+        "source": "github",
+        "repo": "JuliusBrussee/caveman"
+      }
+    },
+    "johnyuencm-harness": {
+      "source": {
+        "source": "github",
+        "repo": "johnyuencm/harness"
+      }
+    },
+    "mattpocock": {
+      "source": {
+        "source": "github",
+        "repo": "mattpocock/skills"
+      }
+    },
+    "open-code-review": {
+      "source": {
+        "source": "github",
+        "repo": "alibaba/open-code-review"
+      }
+    },
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    }
+  }
+}
