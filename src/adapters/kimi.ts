@@ -102,6 +102,7 @@ export async function fetchKimiUsage(cfg: Config): Promise<ProviderUsage> {
         Accept: "application/json",
         "User-Agent": "KimiCLI/1.0",
       },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
       const reason = `Kimi Code usages HTTP ${res.status}`;

@@ -57,3 +57,16 @@ test("formatResetWhen returns locale absolute time, not ISO", () => {
   assert.doesNotMatch(out, /T\d{2}:\d{2}:\d{2}/);
   assert.doesNotMatch(out, /Z$/);
 });
+
+test("formatReset says <1 minute and omits zero parts", () => {
+  const now = Date.parse("2026-07-19T12:00:00.000Z");
+  const at = (ms) => formatReset(new Date(now + ms).toISOString(), now).split(" · ")[0];
+  assert.equal(at(20_000), "Resets in <1 minute");
+  assert.equal(at(59_999), "Resets in <1 minute");
+  assert.equal(at(90_000), "Resets in 2 minutes");
+  assert.equal(at(59.6 * 60_000), "Resets in 1 hour");
+  assert.equal(at(3600_000), "Resets in 1 hour");
+  assert.equal(at(24 * 3600_000), "Resets in 1 day");
+  assert.equal(at(24 * 3600_000 + 30 * 60_000), "Resets in 1 day");
+  assert.equal(at(3600_000 + 60_000), "Resets in 1 hour 1 minute");
+});

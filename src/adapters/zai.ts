@@ -8,7 +8,10 @@ function mapQuota(body: unknown): Record<WindowId, WindowUsage> {
   const windows = unavailableAll("Z.AI did not report this window.");
   if (!body || typeof body !== "object") return windows;
   const root = body as Record<string, unknown>;
-  const limits = (root.limits ?? root.data ?? root) as unknown;
+  const data = root.data as Record<string, unknown> | unknown[] | undefined;
+  const limits = (root.limits ??
+    (Array.isArray(data) ? data : data?.limits) ??
+    root) as unknown;
   if (!Array.isArray(limits)) return windows;
 
   for (const raw of limits) {
@@ -45,6 +48,7 @@ export async function fetchZaiUsage(cfg: Config): Promise<ProviderUsage> {
   try {
     const res = await fetch("https://api.z.ai/api/monitor/usage/quota/limit", {
       headers: { Authorization: key, Accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
       const reason = `Z.AI quota HTTP ${res.status}`;

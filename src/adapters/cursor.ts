@@ -174,23 +174,51 @@ export function resolveCursorStateDbPath(options: CursorPathOptions = {}): strin
   return path.join(root, "Cursor", "User", "globalStorage", "state.vscdb");
 }
 
+const LOCKED_RE = /SQLITE_BUSY|SQLITE_LOCKED|database is locked/i;
+
+/**
+ * Reads state.vscdb in place. It copies the DB (~1 GB) only when Cursor holds a
+ * lock, and only once per reader: token and membership share one copy. A copy
+ * is slow and looks like credential theft to AV. Call cleanup() in finally.
+ */
+function createCursorDbReader(): {
+  get: (dbPath: string, sql: string) => Promise<string>;
+  cleanup: () => void;
+} {
+  let tmp: string | null = null;
+  let copied: Promise<void> | null = null;
+  const get = async (dbPath: string, sql: string): Promise<string> => {
+    try {
+      return await sqliteScalar(dbPath, sql);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // No reader, missing file, bad SQL: a copy cannot help.
+      if (!LOCKED_RE.test(msg)) throw new Error(`Failed to read Cursor state.vscdb: ${msg}`);
+    }
+    try {
+      if (!copied) {
+        tmp = path.join(os.tmpdir(), `tuw-cursor-${randomUUID()}.vscdb`);
+        copied = copySqliteSidecars(dbPath, tmp);
+      }
+      await copied;
+      return await sqliteScalar(tmp!, sql);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to read Cursor state.vscdb: ${msg}`);
+    }
+  };
+  const cleanup = (): void => {
+    if (tmp) removeSqliteSidecars(tmp);
+  };
+  return { get, cleanup };
+}
+
 async function sqliteGet(dbPath: string, sql: string): Promise<string> {
-  // Read in place first. state.vscdb can be ~1 GB; a synchronous copy blocks the
-  // server for seconds (missed health checks) and looks like credential theft to AV.
+  const reader = createCursorDbReader();
   try {
-    return await sqliteScalar(dbPath, sql);
-  } catch {
-    // Locked by Cursor: fall back to reading a private copy.
-  }
-  const tmp = path.join(os.tmpdir(), `tuw-cursor-${randomUUID()}.vscdb`);
-  try {
-    copySqliteSidecars(dbPath, tmp);
-    return await sqliteScalar(tmp, sql);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to read Cursor state.vscdb: ${msg}`);
+    return await reader.get(dbPath, sql);
   } finally {
-    removeSqliteSidecars(tmp);
+    reader.cleanup();
   }
 }
 
@@ -235,6 +263,7 @@ async function fetchCurrentPeriodUsage(
       "User-Agent": "token-usage-dashboard",
     },
     body: "{}",
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
     throw new Error(`Cursor GetCurrentPeriodUsage HTTP ${res.status}`);
@@ -244,11 +273,14 @@ async function fetchCurrentPeriodUsage(
 
 export async function fetchCursorUsage(options: CursorAdapterOptions = {}): Promise<ProviderUsage> {
   const fetchedAt = new Date().toISOString();
+  const reader = options.sqliteGet ? null : createCursorDbReader();
+  const readOpts = reader ? { ...options, sqliteGet: reader.get } : options;
   try {
     const [token, membership] = await Promise.all([
-      readCursorAccessToken(options),
-      readCursorMembership(options),
+      readCursorAccessToken(readOpts),
+      readCursorMembership(readOpts),
     ]);
+    reader?.cleanup();
     const period = await fetchCurrentPeriodUsage(token, options.fetchImpl);
     return {
       provider: "cursor",
@@ -277,6 +309,8 @@ export async function fetchCursorUsage(options: CursorAdapterOptions = {}): Prom
       fetchedAt,
       error: msg,
     };
+  } finally {
+    reader?.cleanup();
   }
 }
 
@@ -286,4 +320,5 @@ export const __test = {
   buildCursorBilling,
   formatPlanLabel,
   round1,
+  createCursorDbReader,
 };

@@ -6,6 +6,7 @@ const { providerLine, providerTitle, wrapProviderLine, maxCharsForWidth } =
 
 let uiSettings = null;
 let refreshTimer = null;
+let refreshSec = 0;
 let lastData = null;
 let lastWrapWidth = 0;
 let wrapResizeTimer = null;
@@ -82,10 +83,13 @@ function renderAll(data, { fit = true } = {}) {
   scheduleRefresh();
 }
 
+/** One interval timer; restart it only when the interval changes. */
 function scheduleRefresh() {
+  const sec = Math.max(30, uiSettings?.refreshIntervalSec ?? 60);
+  if (refreshTimer && sec === refreshSec) return;
   if (refreshTimer) clearInterval(refreshTimer);
-  const sec = uiSettings?.refreshIntervalSec ?? 60;
-  refreshTimer = setInterval(refresh, Math.max(30, sec) * 1000);
+  refreshSec = sec;
+  refreshTimer = setInterval(refresh, sec * 1000);
 }
 
 async function loadUsage() {
@@ -142,4 +146,6 @@ window.addEventListener("resize", () => {
   }, 50);
 });
 
+// Start the timer before the first load, so a failed first load still retries.
+scheduleRefresh();
 refresh();

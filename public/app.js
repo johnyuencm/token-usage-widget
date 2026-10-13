@@ -316,7 +316,9 @@ function renderAll(data) {
   if (data.ui) {
     uiSettings = mergeUi(data.ui);
     setRefreshInterval(uiSettings.refreshIntervalSec);
-    populateSettingsForm();
+    // Fill the form only once here (when loadSettings failed); a poll must not
+    // overwrite unsaved edits. loadSettings and saveSettings fill it otherwise.
+    if (!settingsFormFilled) populateSettingsForm();
   }
 }
 
@@ -341,8 +343,11 @@ async function refresh() {
   updateClock();
 }
 
+let settingsFormFilled = false;
+
 function populateSettingsForm() {
   if (!settingsForm) return;
+  settingsFormFilled = true;
   settingsForm.refreshIntervalSec.value = String(uiSettings.refreshIntervalSec);
   settingsForm.pollClaudeSec.value = String(uiSettings.pollIntervalSec.claude ?? 300);
   settingsForm.claudeFiveHour.checked = uiSettings.display.claude.fiveHour;
@@ -400,6 +405,7 @@ async function saveSettings(ev) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     uiSettings = mergeUi(data.ui);
+    populateSettingsForm();
     setRefreshInterval(uiSettings.refreshIntervalSec);
     settingsStatus.textContent = "Saved";
     await refresh();

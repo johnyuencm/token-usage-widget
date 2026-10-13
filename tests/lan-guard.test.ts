@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { IncomingMessage } from "node:http";
+import http, { type IncomingMessage } from "node:http";
+import net from "node:net";
 import {
   authorizeApiRequest,
   extractRequestToken,
@@ -99,7 +100,7 @@ test("LAN bind keeps loopback callers (the local widget) working without a token
 
 test("handler returns 401 for a tokenless LAN request and 200 for loopback", async () => {
   const token = generateLanToken();
-  const handler = createRequestHandler({ lanToken: token, loopbackBind: false });
+  const handler = createRequestHandler({ lanToken: token, loopbackBind: false, bindHost: "0.0.0.0" });
 
   const run = async (req: IncomingMessage) => {
     let status = 0;
@@ -169,4 +170,100 @@ test("getPublicSettings omits configPath when asked (non-loopback bind)", async 
   assert.equal("configPath" in withoutPath, false);
   assert.deepEqual(withoutPath.providers, withPath.providers);
   assert.deepEqual(withoutPath.ui, withPath.ui);
+});
+
+/** Send one raw HTTP request, so bad paths and Host values reach the server unchanged. */
+function rawRequest(port: number, requestLine: string, host: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, "127.0.0.1", () => {
+      sock.write(`${requestLine} HTTP/1.0\r\nHost: ${host}\r\nConnection: close\r\n\r\n`);
+    });
+    let raw = "";
+    sock.on("data", (d) => (raw += d.toString("utf8")));
+    sock.on("end", () => {
+      const status = Number(/^HTTP\/1\.1 (\d{3})/.exec(raw)?.[1] ?? 0);
+      resolve({ status, body: raw.slice(raw.indexOf("\r\n\r\n") + 4) });
+    });
+    sock.on("error", reject);
+  });
+}
+
+async function startServer(
+  t: { after(fn: () => void): void },
+  ctx: Parameters<typeof createRequestHandler>[0] = { lanToken: null, loopbackBind: true },
+): Promise<number> {
+  const server = http.createServer(createRequestHandler(ctx));
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => server.close());
+  return (server.address() as net.AddressInfo).port;
+}
+
+test("malformed URL or Host returns 400 and the server keeps serving", async (t) => {
+  const port = await startServer(t);
+  const rejections: unknown[] = [];
+  const onRejection = (e: unknown) => rejections.push(e);
+  process.on("unhandledRejection", onRejection);
+  t.after(() => process.off("unhandledRejection", onRejection));
+
+  const badPath = await rawRequest(port, "GET /%E0%A4%A", "127.0.0.1");
+  assert.equal(badPath.status, 400);
+  assert.ok(JSON.parse(badPath.body).error);
+
+  const badHost = await rawRequest(port, "GET /api/health", "a b");
+  assert.equal(badHost.status, 400);
+
+  const health = await rawRequest(port, "GET /api/health", `127.0.0.1:${port}`);
+  assert.equal(health.status, 200, "server must survive malformed requests");
+  assert.deepEqual(rejections, []);
+});
+
+test("health reports app name and pid next to the old fields", async (t) => {
+  const port = await startServer(t);
+  const res = await rawRequest(port, "GET /api/health", `localhost:${port}`);
+  const body = JSON.parse(res.body);
+  assert.equal(body.status, "ok");
+  assert.equal(body.app, "token-usage-widget");
+  assert.equal(body.pid, process.pid);
+  assert.equal(typeof body.fixture, "boolean");
+  assert.equal(typeof body.time, "string");
+});
+
+test("Host header must be loopback or the bind host (DNS rebinding guard)", async (t) => {
+  const port = await startServer(t);
+  for (const host of ["evil.example", `evil.example:${port}`, "192.168.1.50:4321"]) {
+    const res = await rawRequest(port, "GET /api/usage", host);
+    assert.equal(res.status, 403, host);
+  }
+  for (const host of [`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]) {
+    const res = await rawRequest(port, "GET /api/health", host);
+    assert.equal(res.status, 200, host);
+  }
+
+  // LAN bind: the bind host passes the Host check; the token check still applies.
+  const lanPort = await startServer(t, {
+    lanToken: null,
+    loopbackBind: false,
+    bindHost: "192.168.1.50",
+  });
+  assert.equal((await rawRequest(lanPort, "GET /api/health", "192.168.1.50:4321")).status, 200);
+  assert.equal((await rawRequest(lanPort, "GET /api/health", "evil.example")).status, 403);
+});
+
+test("bad config JSON gives a JSON error on settings and usage, not a crash", async (t) => {
+  stashEnv();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-lan-"));
+  tempDirs.push(dir);
+  const cfgPath = path.join(dir, "config.json");
+  fs.writeFileSync(cfgPath, "{ not json");
+  process.env.TOKEN_USAGE_WIDGET_CONFIG = cfgPath;
+
+  const port = await startServer(t);
+  const put = await rawRequest(port, "PUT /api/settings", "127.0.0.1");
+  assert.ok(put.status >= 400 && put.status < 600, String(put.status));
+  assert.ok(JSON.parse(put.body).error);
+  const usage = await rawRequest(port, "GET /api/usage", "127.0.0.1");
+  assert.ok(usage.status === 200 || usage.status === 500, String(usage.status));
+  JSON.parse(usage.body);
+  assert.equal(fs.readFileSync(cfgPath, "utf8"), "{ not json");
+  assert.equal((await rawRequest(port, "GET /api/health", "127.0.0.1")).status, 200);
 });

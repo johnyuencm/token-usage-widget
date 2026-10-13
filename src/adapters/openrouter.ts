@@ -21,6 +21,7 @@ export async function fetchOpenRouterUsage(cfg: Config): Promise<ProviderUsage> 
   try {
     const res = await fetch("https://openrouter.ai/api/v1/credits", {
       headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
       const reason = `OpenRouter credits HTTP ${res.status}`;

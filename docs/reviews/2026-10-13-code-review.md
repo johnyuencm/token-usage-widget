@@ -93,8 +93,31 @@ Severity: H = high, M = medium, L = low. Status: R = reproduced, C = confirmed b
 6. A1: stop writing to `~/.claude/.credentials.json`. Show "run `claude`" on a 401.
 7. The rest, by severity.
 
+## Fix record (v2.0.0)
+
+All 30 findings are fixed. Three agents fixed separate file sets in parallel. Each fix has a test, except W4 (needs a real TTY), L8 (checked live) and L10 (checked by reading).
+
+| Group | Findings | Main change |
+|---|---|---|
+| Config and CLI | C1, C2, S4, S7, W3, W4, D1 | `parseConfigText` strips the BOM and throws on bad JSON. `writeConfigFile` writes tmp + rename. `loadConfig` does not merge `config.example.json`. The `opencode` key is dropped. Setup exits 1 on EOF. Secret prompts are muted. |
+| Server and adapters | S1, S2, S3, S5, S6, S8, A1, A2 | One try/catch around the handler (400/500). Host guard (403). `AbortSignal.timeout(10_000)` on each fetch. Cursor copies only on a lock, one copy per poll. The Claude token is read only: no refresh and no write to `~/.claude/.credentials.json`. Health returns `app` and `pid`. The server exits when `WIDGET_PARENT_PID` is gone. |
+| Desktop and frontend | L1-L10, W1, W2, W5 | The window reloads on a port change. Revive after 3 misses. The counter resets after 60 s healthy. The log appends and rotates at 1 MB. No `/s` in the cmd launcher. A port is freed only when its health says `token-usage-widget`. One refresh timer always runs. Settings edits are kept. `formatReset` shows `<1 minute` and omits zero parts. |
+
+### Breaking changes
+
+- `engines.node` is now `>=22.13`. The in-place Cursor read needs `node:sqlite`.
+- OpenCode support is removed.
+- Claude: when the token expires, the widget shows "run `claude`". It no longer refreshes the token itself.
+- The widget adopts only a server whose health has `app: "token-usage-widget"`. Quit a running v1.x widget before you start v2.0.0.
+
+### Verification
+
+- `npm run verify`: 231 tests, 228 pass, 0 fail, 3 skip (POSIX only). E2E PASS.
+- Live on Windows: one server on 4321. `GET /%E0%A4%A` gives 400. `Host: evil.example` gives 403. openai, cursor and claude return data.
+- Live: stopping `electron.exe` stops its server within 8 s. The relaunch gives exactly one server.
+
 ## Open items
 
 - Not in scope: GitHub Dependabot reports 67 alerts on `master` (25 high, 37 moderate, 5 low). Review them separately.
-- The OpenCode removal and the logon and orphan-server fixes are still uncommitted in the working tree. They wait for the owner's commit decision.
-- No fixes from this review are made yet. The next step is the fix order above, after owner approval.
+- tsx fallback (no `dist/`): a restart stops only the tsx parent. `WIDGET_PARENT_PID` stops the child when Electron exits.
+- `artifacts/e2e-evidence.md` and `docs/macos-widget/*` still mention OpenCode as history.

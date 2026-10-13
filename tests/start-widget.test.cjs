@@ -156,7 +156,7 @@ test("Win32 planning delegates to the established CMD launcher from the checkout
   });
 
   assert.equal(plan.command, comSpec);
-  assert.deepEqual(plan.args, ["/d", "/s", "/c", commandLauncher]);
+  assert.deepEqual(plan.args, ["/d", "/c", commandLauncher]);
   assert.equal(plan.options.cwd, checkout);
   assert.equal(plan.options.detached, false);
   assert.equal(plan.options.stdio, "inherit");
@@ -200,7 +200,7 @@ test("Win32 dispatch waits for the CMD launcher and propagates its failure", asy
   const plan = {
     platform: "win32",
     command: "C:\\Windows\\System32\\cmd.exe",
-    args: ["/d", "/s", "/c", "C:\\workspace\\scripts\\start-widget.cmd"],
+    args: ["/d", "/c", "C:\\workspace\\scripts\\start-widget.cmd"],
     options: { cwd: "C:\\workspace", detached: false, stdio: "inherit", env: {} },
     waitForExit: true,
   };
@@ -243,4 +243,19 @@ test("Darwin spawn errors identify the executable and do not leave an unreferenc
   );
   assert.equal(unrefCount, 0);
   assert.equal(killCount, 1);
+});
+
+test("Win32 plan runs the CMD launcher from a checkout path with a space", { skip: process.platform !== "win32" }, () => {
+  const os = require("node:os");
+  const { spawnSync } = require("node:child_process");
+  const checkout = fs.mkdtempSync(path.join(os.tmpdir(), "tuw sp "));
+  fs.mkdirSync(path.join(checkout, "scripts"));
+  fs.writeFileSync(path.join(checkout, "package.json"), "{}");
+  fs.writeFileSync(path.join(checkout, "scripts", "start-widget.cmd"), "@echo launcher-ran\r\n");
+
+  const plan = resolveLaunchPlan({ platform: "win32", checkout, env: process.env });
+  const run = spawnSync(plan.command, plan.args, { cwd: plan.options.cwd, encoding: "utf8" });
+
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /launcher-ran/);
 });

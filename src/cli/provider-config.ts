@@ -1,17 +1,20 @@
 /**
  * Shared provider config helpers for setup / enable / disable.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import type readline from "node:readline";
+import { Writable } from "node:stream";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   DEFAULT_ENABLED,
-  SECRET_FILE_MODE,
   configPath,
   ensureConfigDir,
   migrateCwdConfigIfNeeded,
+  parseConfigText,
   tightenConfigFileMode,
+  writeConfigFile,
   type Config,
   type ProviderFlags,
 } from "../config.js";
@@ -111,10 +114,47 @@ export function loadExisting(): Record<string, unknown> {
   const p = configPath();
   if (!existsSync(p)) return {};
   tightenConfigFileMode(p);
+  // Throws on bad JSON: returning {} here made the next writeConfig wipe every secret.
+  return parseConfigText(readFileSync(p, "utf8"), p);
+}
+
+/** readline question that rejects if input closes first (EOF), so setup cannot exit 0 unsaved. */
+export function askQuestion(rl: readline.Interface, question: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const onClose = () => reject(new Error("Input closed before setup finished; no config was written."));
+    rl.once("close", onClose);
+    rl.question(question, (answer) => {
+      rl.off("close", onClose);
+      resolve(answer);
+    });
+  });
+}
+
+/** stdout proxy for readline: set `muted` while a secret is typed so the pasted key is not echoed. */
+export function mutableStdout(): Writable & { muted: boolean } {
+  const out = new Writable({
+    write(chunk, encoding, cb) {
+      if (!out.muted) process.stdout.write(chunk, encoding);
+      cb();
+    },
+  }) as Writable & { muted: boolean };
+  out.muted = false;
+  return out;
+}
+
+/** Ask for a secret without echo. `rl` must use `output: out` and `terminal: true` on a TTY. */
+export async function askSecret(
+  rl: readline.Interface,
+  out: Writable & { muted: boolean },
+  question: string,
+): Promise<string> {
+  const answer = askQuestion(rl, question);
+  out.muted = true;
   try {
-    return JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
-  } catch {
-    return {};
+    return (await answer).trim();
+  } finally {
+    out.muted = false;
+    process.stdout.write("\n");
   }
 }
 
@@ -152,10 +192,7 @@ export function applySecret(
 export function writeConfig(merged: Record<string, unknown>): void {
   ensureConfigDir();
   const p = configPath();
-  writeFileSync(p, `${JSON.stringify(merged, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: SECRET_FILE_MODE,
-  });
+  writeConfigFile(p, merged);
   // eslint-disable-next-line no-console
   console.log(`Wrote ${p}`);
 }

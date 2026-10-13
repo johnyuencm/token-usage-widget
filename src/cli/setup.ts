@@ -24,9 +24,12 @@ import { defaultSeams as buildStartupSeams } from "./startup.js";
 import {
   SECRET_BY_PROVIDER,
   applySecret,
+  askQuestion,
+  askSecret,
   defaultShell,
   ensureClaudeCredentials,
   loadExisting,
+  mutableStdout,
   readProviderFlags,
   secretDetectNote,
   UNVALIDATED_SECRET_NOTE,
@@ -35,36 +38,17 @@ import {
 } from "./provider-config.js";
 import { refreshRuntime, type RefreshRuntimeDeps } from "./refresh-runtime.js";
 
-function askYn(
+async function askYn(
   rl: readline.Interface,
   question: string,
   defaultYes: boolean,
 ): Promise<boolean> {
   const hint = defaultYes ? "Y/n" : "y/N";
-  return new Promise((resolve) => {
-    rl.question(`${question} [${hint}] `, (answer) => {
-      const a = answer.trim().toLowerCase();
-      if (!a) {
-        resolve(defaultYes);
-        return;
-      }
-      if (a === "y" || a === "yes" || a === "on" || a === "true" || a === "1") {
-        resolve(true);
-        return;
-      }
-      if (a === "n" || a === "no" || a === "off" || a === "false" || a === "0") {
-        resolve(false);
-        return;
-      }
-      resolve(defaultYes);
-    });
-  });
-}
-
-function askLine(rl: readline.Interface, question: string): Promise<string> {
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => resolve(answer.trim()));
-  });
+  const a = (await askQuestion(rl, `${question} [${hint}] `)).trim().toLowerCase();
+  if (!a) return defaultYes;
+  if (a === "y" || a === "yes" || a === "on" || a === "true" || a === "1") return true;
+  if (a === "n" || a === "no" || a === "off" || a === "false" || a === "0") return false;
+  return defaultYes;
 }
 
 async function runDefaults(enableAll: boolean): Promise<void> {
@@ -89,7 +73,13 @@ async function runInteractive(): Promise<void> {
     existing.providers && typeof existing.providers === "object",
   );
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  // Muteable output so secret prompts do not echo; terminal mode keeps line editing on a TTY.
+  const out = mutableStdout();
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: out,
+    terminal: Boolean(process.stdin.isTTY),
+  });
   // eslint-disable-next-line no-console
   console.log("Token Usage Dashboard — provider setup\n");
 
@@ -110,7 +100,7 @@ async function runInteractive(): Promise<void> {
 
       const secretDetected = secret.detect();
       const detectNote = secretDetectNote(secret, secretDetected);
-      const value = await askLine(rl, `${secret.prompt}${detectNote}: `);
+      const value = await askSecret(rl, out, `${secret.prompt}${detectNote}: `);
       if (value) {
         applySecret(existing, secret.kind, value);
         // No validation call is made before persisting; tell the user so a

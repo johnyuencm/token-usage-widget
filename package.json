@@ -1,15 +1,15 @@
 {
   "name": "token-usage-widget",
-  "version": "1.2.6",
+  "version": "2.0.0",
   "description": "Local Windows corner widget + dashboard for Codex, Cursor, and other AI harness quotas. MIT, localhost-only.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JYPersonal/token-usage-widget.git"
+    "url": "git+https://github.com/johnyuencm/token-usage-widget.git"
   },
   "bugs": {
-    "url": "https://github.com/JYPersonal/token-usage-widget/issues"
+    "url": "https://github.com/johnyuencm/token-usage-widget/issues"
   },
-  "homepage": "https://github.com/JYPersonal/token-usage-widget#readme",
+  "homepage": "https://github.com/johnyuencm/token-usage-widget#readme",
   "type": "module",
   "main": "desktop/main.cjs",
   "bin": {
@@ -28,7 +28,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -43,7 +43,7 @@
     "widget:startup": "node --import tsx src/cli/startup.ts install",
     "widget:startup:disable": "node --import tsx src/cli/startup.ts remove",
     "widget:status": "node --import tsx src/cli/startup.ts status",
-    "test": "node --import tsx --test tests/usage.test.ts tests/providers.test.ts tests/ui-settings.test.ts tests/e2e-smoke.test.ts tests/server-launch.test.cjs tests/start-widget.test.cjs tests/format-reset.test.cjs tests/widget-compact.test.cjs tests/widget-bounds.test.cjs tests/widget-dock.test.cjs tests/login-launch.test.ts tests/setup.test.ts tests/detect-local.test.ts tests/ci-workflow.test.cjs tests/config-paths.test.ts tests/config-perms.test.ts tests/lan-guard.test.ts",
+    "test": "node --import tsx --test tests/usage.test.ts tests/providers.test.ts tests/ui-settings.test.ts tests/e2e-smoke.test.ts tests/server-launch.test.cjs tests/start-widget.test.cjs tests/format-reset.test.cjs tests/widget-compact.test.cjs tests/widget-bounds.test.cjs tests/widget-dock.test.cjs tests/login-launch.test.ts tests/setup.test.ts tests/detect-local.test.ts tests/ci-workflow.test.cjs tests/config-paths.test.ts tests/config-perms.test.ts tests/lan-guard.test.ts tests/widget-refresh.test.cjs tests/refresh-runtime.test.ts",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm run build && npm test && node scripts/e2e-evidence.mjs"
   },

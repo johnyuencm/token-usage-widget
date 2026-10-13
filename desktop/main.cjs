@@ -59,9 +59,15 @@ function runWidgetMain({
   let reviveTimer = null;
   /** @type {ReturnType<typeof setInterval> | null} */
   let healthTimer = null;
+  /** Revive starts since the server was last healthy for HEALTHY_RESET_MS. */
   let reviveFailures = 0;
+  let healthMisses = 0;
+  let lastStartAt = 0;
   const HEALTH_POLL_MS = 15_000;
   const MAX_REVIVE_FAILURES = 12;
+  /** A live but slow server can miss one 2 s check; revive only after this many in a row. */
+  const HEALTH_MISSES_BEFORE_REVIVE = 3;
+  const HEALTHY_RESET_MS = 60_000;
   /** Skip persisting while applying programmatic content-fit. */
   let applyingFit = false;
   /**
@@ -119,24 +125,55 @@ function runWidgetMain({
       }
       if (app.isQuitting) return;
       console.error(`[widget] usage server exited code=${code} signal=${signal}; scheduling revive`);
+      // A dead server needs no more health misses before the revive.
+      healthMisses = HEALTH_MISSES_BEFORE_REVIVE;
       scheduleRevive(400);
     });
   }
 
-  async function ensureServer() {
+  function ownedServerAlive() {
+    return Boolean(ownsServer && serverProc && serverProc.exitCode == null && !serverProc.killed);
+  }
+
+  /** Stop the owned server and wait (max 3 s) so its port is free for the restart. */
+  function stopOwnedServer() {
+    const proc = serverProc;
+    if (!ownedServerAlive()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, 3000);
+      timer.unref?.();
+      proc.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      try {
+        proc.kill();
+      } catch {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  }
+
+  async function ensureServer(preferredPort = port) {
     if (ensurePromise) return ensurePromise;
     ensurePromise = (async () => {
       const result = await ensureUsageServer({
         host,
-        port,
+        port: preferredPort,
         root,
         env: widgetServerEnv(),
       });
+      const previousUrl = serverEndpoint?.baseUrl;
       serverEndpoint = result.endpoint;
+      lastStartAt = Date.now();
       if (result.owned && result.proc) {
         bindOwnedServer(result.proc);
       }
-      reviveFailures = 0;
+      // The renderer fetches relative /api/* URLs, so a new port needs a reload.
+      if (previousUrl && previousUrl !== result.endpoint.baseUrl && win && !win.isDestroyed?.()) {
+        win.loadURL(`${result.endpoint.baseUrl}/widget.html`);
+      }
       return result.endpoint;
     })().finally(() => {
       ensurePromise = null;
@@ -174,24 +211,31 @@ function runWidgetMain({
       if (health.fixture && !allowFixture) {
         return { ok: false, reason: "fixture_mismatch" };
       }
-      reviveFailures = 0;
+      healthMisses = 0;
+      // Reset only after a stable period, so a crash loop still reaches MAX_REVIVE_FAILURES.
+      if (Date.now() - lastStartAt >= HEALTHY_RESET_MS) reviveFailures = 0;
       return { ok: true, reason: "healthy" };
+    }
+    healthMisses += 1;
+    if (healthMisses < HEALTH_MISSES_BEFORE_REVIVE) {
+      return { ok: false, reason: "health_miss" };
     }
     if (reviveFailures >= MAX_REVIVE_FAILURES) {
       return { ok: false, reason: "give_up" };
     }
+    reviveFailures += 1;
     try {
-      const next = await ensureServer();
+      // Never run two owned servers: stop a live but unhealthy one, then reuse its port.
+      await stopOwnedServer();
+      const next = await ensureServer(endpoint.port);
       const again = await fetchHealth(next.host, next.port);
       if (again?.ok && !(again.fixture && !allowFixture)) {
-        reviveFailures = 0;
+        healthMisses = 0;
         return { ok: true, reason: "restarted" };
       }
-      reviveFailures += 1;
       scheduleRevive(Math.min(30_000, 1000 * reviveFailures));
       return { ok: false, reason: "not_ready" };
     } catch (err) {
-      reviveFailures += 1;
       console.error("[widget] revive failed:", err instanceof Error ? err.message : err);
       scheduleRevive(Math.min(30_000, 1000 * reviveFailures));
       return { ok: false, reason: "error", error: err instanceof Error ? err.message : String(err) };

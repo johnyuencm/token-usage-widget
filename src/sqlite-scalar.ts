@@ -4,7 +4,8 @@
  */
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
-import { chmodSync, copyFileSync, existsSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
+import { chmod, copyFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -88,23 +89,24 @@ export async function sqliteScalar(
 /** These copies can hold provider tokens (e.g. Cursor accessToken). */
 const SECRET_COPY_MODE = 0o600;
 
-export function copySqliteSidecars(src: string, dest: string): void {
-  copyFileSync(src, dest);
+/** Async: state.vscdb can be ~1 GB, and a sync copy blocks the server for seconds. */
+export async function copySqliteSidecars(src: string, dest: string): Promise<void> {
+  await copyFile(src, dest);
   for (const suffix of ["-wal", "-shm"] as const) {
     if (existsSync(src + suffix)) {
       try {
-        copyFileSync(src + suffix, dest + suffix);
+        await copyFile(src + suffix, dest + suffix);
       } catch {
         // WAL/SHM are optional; the copied main database may still be queryable.
       }
     }
   }
-  // copyFileSync has no mode option; chmod after. POSIX only — Windows mode
+  // copyFile has no mode option; chmod after. POSIX only — Windows mode
   // bits are a no-op.
   if (process.platform !== "win32") {
     for (const p of [dest, `${dest}-wal`, `${dest}-shm`]) {
       try {
-        if (existsSync(p)) chmodSync(p, SECRET_COPY_MODE);
+        if (existsSync(p)) await chmod(p, SECRET_COPY_MODE);
       } catch {
         // Best effort; a chmod failure must not lose the token read.
       }

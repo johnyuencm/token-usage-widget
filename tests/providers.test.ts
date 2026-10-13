@@ -7,6 +7,7 @@ import path from "node:path";
 import { __test as claudeTest, fetchClaudeUsage } from "../src/adapters/claude.js";
 import { __test as pollTest, fetchProviderThrottled } from "../src/providers/poll-cache.js";
 import {
+  __test as cursorTest,
   fetchCursorUsage,
   readCursorAccessToken,
   resolveCursorStateDbPath,
@@ -78,6 +79,7 @@ test("Cursor uses the standard macOS state database for normal usage", async (t)
     },
     fetchImpl: async (_input, init) => {
       assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer fixture-cursor-token");
+      assert.ok(init?.signal instanceof AbortSignal, "Cursor fetch must carry a timeout signal");
       return new Response(
         JSON.stringify({
           billingCycleEnd: "1780000000000",
@@ -197,6 +199,62 @@ test("Cursor reads access token from state.vscdb without sqlite3 CLI", async (t)
   assert.equal(token, "tok-from-vscdb");
 });
 
+test("Cursor reader skips the copy when the read fails without a lock", async (t) => {
+  const dir = await makeTempDir(t);
+  const before = new Set(await readdir(os.tmpdir()));
+  const reader = cursorTest.createCursorDbReader();
+  try {
+    await assert.rejects(
+      reader.get(path.join(dir, "missing.vscdb"), "SELECT 1;"),
+      /Failed to read Cursor state\.vscdb/,
+    );
+  } finally {
+    reader.cleanup();
+  }
+  const leaked = (await readdir(os.tmpdir())).filter((f) => f.startsWith("tuw-cursor-") && !before.has(f));
+  assert.deepEqual(leaked, [], "no tmp copy for a non-lock failure");
+});
+
+test("Cursor reader copies a locked DB once and reads both keys from that copy", async (t) => {
+  let DatabaseSync: new (file: string) => {
+    exec(sql: string): void;
+    close(): void;
+  };
+  try {
+    ({ DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof DatabaseSync });
+  } catch {
+    t.skip("node:sqlite not available");
+    return;
+  }
+  const dir = await makeTempDir(t);
+  const dbPath = path.join(dir, "state.vscdb");
+  const db = new DatabaseSync(dbPath);
+  db.exec(
+    "CREATE TABLE ItemTable (key TEXT, value TEXT);" +
+      "INSERT INTO ItemTable VALUES ('a','tok'),('b','pro');",
+  );
+  db.exec("BEGIN EXCLUSIVE; UPDATE ItemTable SET value=value;");
+
+  const isCopy = (f: string) => f.startsWith("tuw-cursor-") && f.endsWith(".vscdb");
+  const before = new Set((await readdir(os.tmpdir())).filter(isCopy));
+  const reader = cursorTest.createCursorDbReader();
+  try {
+    const [a, b] = await Promise.all([
+      reader.get(dbPath, "SELECT value FROM ItemTable WHERE key='a';"),
+      reader.get(dbPath, "SELECT value FROM ItemTable WHERE key='b';"),
+    ]);
+    assert.deepEqual([a, b], ["tok", "pro"]);
+    const copies = (await readdir(os.tmpdir())).filter((f) => isCopy(f) && !before.has(f));
+    assert.equal(copies.length, 1, "one copy serves both reads");
+  } finally {
+    reader.cleanup();
+    db.exec("ROLLBACK");
+    db.close();
+  }
+  const left = (await readdir(os.tmpdir())).filter((f) => isCopy(f) && !before.has(f));
+  assert.deepEqual(left, [], "cleanup removes the copy");
+});
+
 test("Cursor token copies are created with mode 0600 on POSIX", async (t) => {
   if (process.platform === "win32") {
     t.skip("POSIX mode bits only");
@@ -210,7 +268,7 @@ test("Cursor token copies are created with mode 0600 on POSIX", async (t) => {
   const cursorSrc = path.join(homeDir, "state.vscdb");
   await writeFile(cursorSrc, "fixture-cursor-db");
   const cursorCopy = path.join(tempDir, "cursor-copy.vscdb");
-  copySqliteSidecars(cursorSrc, cursorCopy);
+  await copySqliteSidecars(cursorSrc, cursorCopy);
   assert.equal((await stat(cursorCopy)).mode & 0o777, 0o600);
 });
 
@@ -384,190 +442,124 @@ test("claude successful usage fetch resets exponential backoff streak", async (t
   assert.equal(calls, 4, "next attempt is allowed after the base backoff");
 });
 
-test("claude expired-token refresh 429s back off without calling usage", async (t) => {
-  claudeTest.resetCache();
-  t.after(() => claudeTest.resetCache());
-
-  let now = 1_700_000_000_000;
-  claudeTest.setNow(() => now);
-  t.after(() => claudeTest.setNow(null));
-
-  const home = await makeTempDir(t);
+async function writeClaudeCreds(
+  t: { after(fn: () => Promise<void> | void): void },
+  oauth: Record<string, unknown>,
+): Promise<string> {
+  const home = await makeTempDir(t as { after(fn: () => Promise<void>): void });
   const credPath = path.join(home, ".claude", ".credentials.json");
   await mkdir(path.dirname(credPath), { recursive: true });
-  await writeFile(
-    credPath,
-    JSON.stringify({
-      claudeAiOauth: {
-        accessToken: "stale-token",
-        refreshToken: "refresh-me",
-        expiresAt: now - 60_000,
-      },
-    }),
-    "utf8",
-  );
-
+  await writeFile(credPath, JSON.stringify({ claudeAiOauth: oauth }), "utf8");
   const originalHomedir = os.homedir;
   os.homedir = () => home;
   t.after(() => {
     os.homedir = originalHomedir;
   });
+  return credPath;
+}
+
+test("claude expired file token: no refresh, no write, error says run claude", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+  const credPath = await writeClaudeCreds(t, {
+    accessToken: "stale-token",
+    refreshToken: "refresh-me",
+    expiresAt: Date.now() - 60_000,
+  });
+  const before = await readFile(credPath, "utf8");
+  const mtimeBefore = (await stat(credPath)).mtimeMs;
 
   const urls: string[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
-    const url = String(input);
-    urls.push(url);
-    if (url.includes("/oauth/token")) {
-      return new Response(JSON.stringify({ error: "rate_limit_error" }), {
-        status: 429,
-        headers: { "retry-after": "60" },
-      });
-    }
-    throw new Error(`usage must not be called while refresh is rate limited: ${url}`);
+    urls.push(String(input));
+    throw new Error("no network call expected for an expired token");
   };
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
 
-  const first = await fetchClaudeUsage(bareConfig());
-  assert.match(first.error ?? "", /rate limited \(retry in ~1m\)/i);
-  assert.equal(urls.length, 1);
-  assert.match(urls[0] ?? "", /oauth\/token/);
+  const usage = await fetchClaudeUsage(bareConfig());
+  assert.match(usage.error ?? "", /run `claude` to refresh it/);
+  assert.deepEqual(urls, [], "must not call the token endpoint or usage API");
+  assert.equal(await readFile(credPath, "utf8"), before);
+  assert.equal((await stat(credPath)).mtimeMs, mtimeBefore);
+  const files = await readdir(path.dirname(credPath));
+  assert.deepEqual(files, [".credentials.json"], "no .tmp write-back file");
+});
 
-  const second = await fetchClaudeUsage(bareConfig());
-  assert.match(second.error ?? "", /rate limited \(retry in ~/i);
-  assert.equal(urls.length, 1, "must not refresh or hit usage during backoff");
+test("claude 401 returns the run-claude error and leaves credentials untouched", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+  const credPath = await writeClaudeCreds(t, {
+    accessToken: "revoked-token",
+    refreshToken: "refresh-me",
+    expiresAt: Date.now() + 3_600_000,
+  });
+  const before = await readFile(credPath, "utf8");
+
+  const urls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    urls.push(String(input));
+    assert.ok(init?.signal instanceof AbortSignal, "usage fetch must carry a timeout signal");
+    return new Response("{}", { status: 401 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const usage = await fetchClaudeUsage(bareConfig());
+  assert.match(usage.error ?? "", /run `claude` to refresh it/);
+  assert.deepEqual(urls, ["https://api.anthropic.com/api/oauth/usage"]);
+  assert.equal(await readFile(credPath, "utf8"), before);
+});
+
+test("claude token read error is contained (resolves with error, never rejects)", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+  const originalHomedir = os.homedir;
+  os.homedir = () => {
+    throw new Error("homedir boom");
+  };
+  t.after(() => {
+    os.homedir = originalHomedir;
+  });
+
+  const usage = await fetchClaudeUsage(bareConfig());
+  assert.equal(usage.provider, "claude");
+  assert.match(usage.error ?? "", /homedir boom/);
+});
+
+test("claude backoff hold keeps the cached fetchedAt", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(JSON.stringify({ five_hour: { utilization: 5 } }), { status: 200 });
+    }
+    return new Response("{}", { status: 429 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const cfg = bareConfig({ claude: { accessToken: "test-token" } });
+  const ok = await fetchClaudeUsage(cfg);
+  await new Promise((r) => setTimeout(r, 5));
+  const held = await fetchClaudeUsage(cfg);
+  assert.equal(held.windows.five_hour.usedPercent, 5);
+  assert.equal(held.fetchedAt, ok.fetchedAt, "stale data must not look fresh");
 });
 
 test("claude tokenExpired respects skew before expiresAt", () => {
   const expiresAt = Date.now() + 30_000;
   assert.equal(claudeTest.tokenExpired(expiresAt), true);
   assert.equal(claudeTest.tokenExpired(expiresAt + 120_000), false);
-});
-
-test("claude fetchClaudeUsage refreshes expired file token then loads usage", async (t) => {
-  claudeTest.resetCache();
-  t.after(() => claudeTest.resetCache());
-
-  const home = await makeTempDir(t);
-  const credPath = path.join(home, ".claude", ".credentials.json");
-  await mkdir(path.dirname(credPath), { recursive: true });
-  await writeFile(
-    credPath,
-    JSON.stringify({
-      claudeAiOauth: {
-        accessToken: "stale-token",
-        refreshToken: "refresh-me",
-        expiresAt: Date.now() - 60_000,
-      },
-    }),
-    "utf8",
-  );
-
-  const originalHomedir = os.homedir;
-  os.homedir = () => home;
-  t.after(() => {
-    os.homedir = originalHomedir;
-  });
-
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input, init) => {
-    const url = String(input);
-    if (url === "https://platform.claude.com/v1/oauth/token") {
-      return new Response(
-        JSON.stringify({
-          access_token: "fresh-token",
-          refresh_token: "refresh-rotated",
-          expires_in: 3600,
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-    if (url === "https://api.anthropic.com/api/oauth/usage") {
-      const auth = (init?.headers as Record<string, string> | undefined)?.Authorization;
-      assert.equal(auth, "Bearer fresh-token");
-      return new Response(
-        JSON.stringify({
-          five_hour: { utilization: 12, resets_at: "2026-08-06T22:00:00.000Z" },
-          seven_day: { utilization: 34, resets_at: "2026-08-13T00:00:00.000Z" },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-    throw new Error(`unexpected fetch: ${url}`);
-  };
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  const usage = await fetchClaudeUsage(bareConfig());
-  assert.equal(usage.error, undefined);
-  assert.equal(usage.windows.five_hour.status, "ok");
-  assert.equal(usage.windows.five_hour.usedPercent, 12);
-
-  const saved = JSON.parse(await readFile(credPath, "utf8")) as {
-    claudeAiOauth: { accessToken: string; refreshToken: string; expiresAt: number };
-  };
-  assert.equal(saved.claudeAiOauth.accessToken, "fresh-token");
-  assert.equal(saved.claudeAiOauth.refreshToken, "refresh-rotated");
-  assert.ok(saved.claudeAiOauth.expiresAt > Date.now());
-});
-
-test("claude reports a distinct warning when the refreshed token cannot be saved", async (t) => {
-  claudeTest.resetCache();
-  t.after(() => claudeTest.resetCache());
-
-  const home = await makeTempDir(t);
-  const credPath = path.join(home, ".claude", ".credentials.json");
-  await mkdir(path.dirname(credPath), { recursive: true });
-  await writeFile(
-    credPath,
-    JSON.stringify({
-      claudeAiOauth: {
-        accessToken: "stale-token",
-        refreshToken: "refresh-me",
-        expiresAt: Date.now() - 60_000,
-      },
-    }),
-    "utf8",
-  );
-  // Block writeClaudeOAuthFile's tmp+rename: a directory at the tmp path makes
-  // the writeFileSync throw after the credentials file has been read.
-  await mkdir(`${credPath}.tmp`, { recursive: true });
-
-  const originalHomedir = os.homedir;
-  os.homedir = () => home;
-  const originalFetch = globalThis.fetch;
-  const warnings: string[] = [];
-  const originalWarn = console.warn;
-  console.warn = (msg: unknown) => warnings.push(String(msg));
-  t.after(() => {
-    os.homedir = originalHomedir;
-    globalThis.fetch = originalFetch;
-    console.warn = originalWarn;
-  });
-
-  globalThis.fetch = async (input) => {
-    const url = String(input);
-    if (url === "https://platform.claude.com/v1/oauth/token") {
-      return new Response(
-        JSON.stringify({ access_token: "fresh-token", refresh_token: "rotated", expires_in: 3600 }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-    return new Response(
-      JSON.stringify({ five_hour: { utilization: 7, resets_at: "2026-08-06T22:00:00.000Z" } }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
-  };
-
-  const usage = await fetchClaudeUsage(bareConfig());
-  assert.equal(usage.error, undefined);
-  assert.ok(
-    warnings.some((w) => /refresh succeeded but saving .* failed/.test(w)),
-    `expected a save-failure warning, got: ${JSON.stringify(warnings)}`,
-  );
 });
 
 test("poll cache serves cached provider payload within interval", async (t) => {
@@ -600,6 +592,7 @@ test("poll cache serves cached provider payload within interval", async (t) => {
   });
   const out = await fetchProviderThrottled("claude", cfg);
   assert.equal(out.windows.five_hour.reason, "cached");
+  assert.equal(out.fetchedAt, "2026-08-06T00:00:00.000Z", "cache hit keeps the original fetchedAt");
   assert.equal(calls, 0);
 });
 
@@ -628,6 +621,15 @@ test("zai mapQuota maps session + week limits", () => {
   assert.equal(windows.five_hour.usedPercent, 27);
   assert.equal(windows.week.status, "ok");
   assert.equal(windows.week.usedPercent, 70);
+});
+
+test("zai mapQuota accepts the nested {data:{limits:[...]}} shape", () => {
+  const windows = zaiTest.mapQuota({
+    code: 200,
+    data: { limits: [{ type: "TOKENS_LIMIT", percentage: 41 }, { type: "week", percentage: 9 }] },
+  });
+  assert.equal(windows.five_hour.usedPercent, 41);
+  assert.equal(windows.week.usedPercent, 9);
 });
 
 test("openrouter missing key returns unavailable", async () => {

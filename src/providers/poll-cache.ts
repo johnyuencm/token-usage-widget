@@ -16,12 +16,12 @@ export async function fetchProviderThrottled(id: ProviderId, cfg: Config): Promi
   const now = Date.now();
   const hit = cache.get(id);
   if (hit && now - hit.fetchedAtMs < minMs) {
-    return { ...hit.usage, fetchedAt: new Date().toISOString() };
+    // Keep the original fetchedAt so cached data does not show as fresh.
+    return hit.usage;
   }
   const pending = inflight.get(id);
   if (pending) {
-    const usage = await pending;
-    return { ...usage, fetchedAt: new Date().toISOString() };
+    return pending;
   }
   const startedAt = now;
   const p = fetchProvider(id, cfg)

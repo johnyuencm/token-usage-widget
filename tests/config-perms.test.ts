@@ -66,37 +66,59 @@ posixTest("loadConfig tightens a pre-existing world-readable config to 0600", as
   assert.equal(fs.statSync(cfg).mode & 0o777, 0o600);
 });
 
-posixTest("a Claude token refresh keeps .credentials.json at 0600", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-perms-"));
+function tempConfig(): string {
+  stashEnv();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-cfg-"));
   tempDirs.push(dir);
-  const cred = path.join(dir, ".credentials.json");
-  fs.writeFileSync(cred, JSON.stringify({ claudeAiOauth: { accessToken: "old" } }), { mode: 0o600 });
-  const oldUmask = process.umask(0o022);
-  try {
-    const { __test } = await import("../src/adapters/claude.js");
-    __test.writeClaudeOAuthFile(cred, { accessToken: "new", refreshToken: "r", expiresAt: 1 });
-  } finally {
-    process.umask(oldUmask);
-  }
+  const cfg = path.join(dir, "config.json");
+  process.env.TOKEN_USAGE_WIDGET_CONFIG = cfg;
+  return cfg;
+}
 
-  assert.equal(fs.statSync(cred).mode & 0o777, 0o600);
-  assert.equal(JSON.parse(fs.readFileSync(cred, "utf8")).claudeAiOauth.accessToken, "new");
+test("bad JSON config throws on CLI load and settings save, and the file is untouched", async () => {
+  const cfg = tempConfig();
+  const bad = '{"openrouter":{"apiKey":"keep-me"},';
+  fs.writeFileSync(cfg, bad);
+  const { loadExisting } = await import("../src/cli/provider-config.js");
+  const { saveUiSettingsPatch } = await import("../src/settings-api.js");
+  assert.throws(() => loadExisting(), /Config at .* is not valid JSON; fix or delete it/);
+  await assert.rejects(saveUiSettingsPatch({ refreshIntervalSec: 120 }), /not valid JSON/);
+  assert.equal(fs.readFileSync(cfg, "utf8"), bad);
 });
 
-posixTest("a Claude token refresh keeps 0600 even over a stale world-readable .tmp", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-perms-"));
-  tempDirs.push(dir);
-  const cred = path.join(dir, ".credentials.json");
-  fs.writeFileSync(cred, JSON.stringify({ claudeAiOauth: { accessToken: "old" } }), { mode: 0o600 });
-  fs.writeFileSync(`${cred}.tmp`, "stale", { mode: 0o644 });
-  const oldUmask = process.umask(0o022);
-  try {
-    const { __test } = await import("../src/adapters/claude.js");
-    __test.writeClaudeOAuthFile(cred, { accessToken: "new", refreshToken: "r", expiresAt: 1 });
-  } finally {
-    process.umask(oldUmask);
-  }
+test("config with a UTF-8 BOM parses in loadExisting and loadConfig", async () => {
+  const cfg = tempConfig();
+  fs.writeFileSync(cfg, '\uFEFF{"providers":{"kimi":true},"kimi":{"apiKey":"k1"}}');
+  const { loadExisting } = await import("../src/cli/provider-config.js");
+  assert.equal((loadExisting().kimi as { apiKey: string }).apiKey, "k1");
+  const mod = await loadFreshConfigModule();
+  const loaded = await mod.loadConfig();
+  assert.equal(loaded.providers.kimi, true);
+  assert.equal(loaded.kimi.apiKey, "k1");
+});
 
-  assert.equal(fs.statSync(cred).mode & 0o777, 0o600);
-  assert.equal(JSON.parse(fs.readFileSync(cred, "utf8")).claudeAiOauth.accessToken, "new");
+test("writeConfig replaces the file atomically and leaves no .tmp", async () => {
+  const cfg = tempConfig();
+  fs.writeFileSync(cfg, '{"old":true}');
+  const { writeConfig } = await import("../src/cli/provider-config.js");
+  writeConfig({ openrouter: { apiKey: "new" } });
+  assert.deepEqual(JSON.parse(fs.readFileSync(cfg, "utf8")), { openrouter: { apiKey: "new" } });
+  assert.equal(fs.existsSync(`${cfg}.tmp`), false);
+});
+
+test("stale opencode block is dropped on load and not written back", async () => {
+  const cfg = tempConfig();
+  fs.writeFileSync(cfg, JSON.stringify({ opencode: { go: { authCookie: "old-cookie" } }, kimi: { apiKey: "k" } }));
+  const { saveUiSettingsPatch } = await import("../src/settings-api.js");
+  await saveUiSettingsPatch({ refreshIntervalSec: 120 });
+  const saved = JSON.parse(fs.readFileSync(cfg, "utf8"));
+  assert.equal("opencode" in saved, false);
+  assert.equal(saved.kimi.apiKey, "k");
+});
+
+test("loadConfig keeps every provider off before setup (no config.example.json merge)", async () => {
+  tempConfig();
+  const mod = await loadFreshConfigModule();
+  const loaded = await mod.loadConfig();
+  assert.deepEqual(Object.values(loaded.providers).filter(Boolean), []);
 });

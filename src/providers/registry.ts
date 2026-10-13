@@ -1,5 +1,6 @@
 import type { Config } from "../config.js";
 import type { ProviderId, ProviderUsage } from "../types.js";
+import { unavailableAll } from "../types.js";
 import { fetchOpenAIUsage } from "../adapters/openai.js";
 import { fetchCursorUsage } from "../adapters/cursor.js";
 import { fetchClaudeUsage } from "../adapters/claude.js";
@@ -74,8 +75,20 @@ const FETCHERS: Record<ProviderId, Fetcher> = {
   grok: (cfg) => fetchGrokUsage(cfg),
 };
 
+/** Never rejects: one provider failure must not fail Promise.all for /api/usage. */
 export async function fetchProvider(id: ProviderId, cfg: Config): Promise<ProviderUsage> {
-  return FETCHERS[id](cfg);
+  try {
+    return await FETCHERS[id](cfg);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      provider: id,
+      label: PROVIDER_META.find((m) => m.id === id)?.label ?? id,
+      windows: unavailableAll(msg),
+      fetchedAt: new Date().toISOString(),
+      error: msg,
+    };
+  }
 }
 
 export async function fetchEnabledProviders(cfg: Config): Promise<ProviderUsage[]> {

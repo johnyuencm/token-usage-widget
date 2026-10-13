@@ -8,8 +8,10 @@ import { PROVIDER_META } from "../providers/registry.js";
 import {
   SECRET_BY_PROVIDER,
   applySecret,
+  askSecret,
   ensureClaudeCredentials,
   loadExisting,
+  mutableStdout,
   parseProviderId,
   readProviderFlags,
   secretDetectNote,
@@ -32,14 +34,19 @@ export interface ProviderCliDeps {
   log?: (msg: string) => void;
 }
 
-function defaultAskLine(question: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
+/** Secret prompt: muted output so the pasted key is not echoed. */
+async function defaultAskLine(question: string): Promise<string> {
+  const out = mutableStdout();
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: out,
+    terminal: Boolean(process.stdin.isTTY),
   });
+  try {
+    return await askSecret(rl, out, question);
+  } finally {
+    rl.close();
+  }
 }
 
 async function promptSecretIfNeeded(

@@ -488,3 +488,36 @@ test("setProviderEnabled preserves other flags", () => {
   assert.equal(p.kimi, true);
   assert.equal(p.claude, false);
 });
+
+test("askQuestion rejects when input closes before an answer (EOF)", async () => {
+  const { PassThrough } = await import("node:stream");
+  const readline = await import("node:readline");
+  const { askQuestion } = await import("../src/cli/provider-config.js");
+  const input = new PassThrough();
+  const rl = readline.createInterface({ input, output: new PassThrough() });
+  const pending = askQuestion(rl, "Enable? ");
+  input.end();
+  await assert.rejects(pending, /Input closed before setup finished/);
+});
+
+test("tuw setup with stdin closed exits 1 and writes no config", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-eof-"));
+  const cfg = path.join(dir, "config.json");
+  try {
+    const res = spawnSync(process.execPath, ["--import", "tsx", "src/cli/setup.ts"], {
+      input: "",
+      env: { ...process.env, TOKEN_USAGE_WIDGET_CONFIG: cfg },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(res.status, 1, res.stderr);
+    assert.match(res.stderr, /Input closed before setup finished/);
+    assert.equal(fs.existsSync(cfg), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -22,17 +22,19 @@
     const diff = t - nowMs;
     if (diff <= 0) return "Resets now";
 
-    const totalMin = Math.max(0, Math.round(diff / 60000));
+    // Round once to whole minutes, then split, so 59.6 min reads "1 hour".
+    const totalMin = Math.round(diff / 60000);
     const days = Math.floor(totalMin / (60 * 24));
     const hours = Math.floor((totalMin % (60 * 24)) / 60);
     const mins = totalMin % 60;
     const parts = [];
     if (days > 0) parts.push(`${days} day${days === 1 ? "" : "s"}`);
-    if (hours > 0 || days > 0) parts.push(`${hours} hour${hours === 1 ? "" : "s"}`);
-    if (days === 0) parts.push(`${mins} minute${mins === 1 ? "" : "s"}`);
+    if (hours > 0) parts.push(`${hours} hour${hours === 1 ? "" : "s"}`);
+    if (days === 0 && mins > 0) parts.push(`${mins} minute${mins === 1 ? "" : "s"}`);
+    const text = diff < 60000 ? "<1 minute" : parts.join(" ");
 
     const when = formatResetWhen(iso);
-    return when ? `Resets in ${parts.join(" ")} · ${when}` : `Resets in ${parts.join(" ")}`;
+    return when ? `Resets in ${text} · ${when}` : `Resets in ${text}`;
   }
 
   /**

@@ -87,6 +87,7 @@ async function loadMainHarness(
   const trays = [];
   const openedUrls = [];
   const healthCalls = [];
+  const ensureCalls = [];
   const legacyIcons = [];
   const templateIcons = [];
   const applicationMenus = [];
@@ -232,7 +233,10 @@ async function loadMainHarness(
     DEFAULT_HOST: "127.0.0.1",
     DEFAULT_PORT: 4321,
     SERVER_LOG: "/tmp/server.log",
-    ensureUsageServer: async () => (typeof serverResult === "function" ? serverResult() : serverResult),
+    ensureUsageServer: async (opts) => {
+      ensureCalls.push(opts);
+      return typeof serverResult === "function" ? serverResult() : serverResult;
+    },
     fetchHealth: async (host, port) => {
       healthCalls.push({ host, port });
       return health(host, port);
@@ -265,6 +269,7 @@ async function loadMainHarness(
     openedUrls,
     shortcutWrites,
     healthCalls,
+    ensureCalls,
     legacyIcons,
     templateIcons,
     applicationMenus,
@@ -1014,9 +1019,21 @@ test("a revive that starts a new server stops the old owned one (no orphan serve
     platform: "win32",
     health: () => (healthy ? { ok: true, fixture: false } : null),
   });
-  healthy = false; // one missed health check while the first server is busy
-  await harness.ipcHandlers.get("widget:ensure-server")();
+  // first.kill() must end the process so the restart can reuse its port.
+  first.kill = () => {
+    first.killCalls += 1;
+    first.killed = true;
+    setImmediate(() => first.emit("exit", 1, null));
+  };
+  healthy = false;
+  const ensure = harness.ipcHandlers.get("widget:ensure-server");
+  assert.equal((await ensure()).reason, "health_miss");
+  assert.equal((await ensure()).reason, "health_miss");
+  assert.equal(results.length, 1, "two misses on a live server start no revive");
+  assert.equal(first.killCalls, 0);
+  await ensure();
   assert.equal(results.length, 0, "revive started the second server");
+  assert.equal(harness.ensureCalls.at(-1).port, 4321, "restart reuses the current port");
   assert.equal(first.killCalls, 1, "old owned server is stopped");
   assert.equal(second.killCalls, 0);
   harness.app.quit();
@@ -1321,4 +1338,142 @@ test("ensureUsageServer restarts after the child process dies", async () => {
   } finally {
     if (second.proc && !second.proc.killed) second.proc.kill();
   }
+});
+
+test("revive reloads the widget window when the server moves to a new port", async () => {
+  const at = (port) => ({ ...idleWin32Server(), endpoint: { host: "127.0.0.1", port, baseUrl: `http://127.0.0.1:${port}` } });
+  const results = [at(4321), at(61567), at(61567)];
+  let livePort = 4321;
+  const harness = await loadMainHarness(() => results.shift(), {
+    health: (_host, port) => (port === livePort ? { ok: true, fixture: false } : null),
+  });
+  const window = harness.windows[0];
+  assert.equal(window.loadedUrl, "http://127.0.0.1:4321/widget.html");
+  const ensure = harness.ipcHandlers.get("widget:ensure-server");
+
+  livePort = 61567; // 4321 died; the revive lands on a fallback port
+  for (let i = 0; i < 3; i++) await ensure();
+  assert.equal(harness.ensureCalls[1].port, 4321);
+  assert.equal(window.loadedUrl, "http://127.0.0.1:61567/widget.html");
+
+  livePort = 0; // the fallback server dies too: revive on the current port, not the configured one
+  for (let i = 0; i < 3; i++) await ensure();
+  assert.equal(harness.ensureCalls[2].port, 61567);
+  harness.app.quit();
+});
+
+test("a crash loop stops at the revive limit and the limit resets after 60 s healthy", async () => {
+  let justStarted = false;
+  const harness = await loadMainHarness(
+    () => {
+      justStarted = true; // healthy right after start, then crashes
+      return idleWin32Server();
+    },
+    {
+      health: () => {
+        const ok = justStarted;
+        justStarted = false;
+        return ok ? { ok: true, fixture: false } : null;
+      },
+    },
+  );
+  const ensure = harness.ipcHandlers.get("widget:ensure-server");
+  for (let i = 0; i < 80; i++) await ensure();
+  assert.equal(harness.ensureCalls.length, 1 + 12, "startup + MAX_REVIVE_FAILURES starts");
+  assert.equal((await ensure()).reason, "give_up");
+
+  const realNow = Date.now;
+  Date.now = () => realNow() + 61_000;
+  try {
+    justStarted = true;
+    assert.equal((await ensure()).reason, "healthy");
+    for (let i = 0; i < 3; i++) await ensure();
+    assert.equal(harness.ensureCalls.length, 14, "healthy for 60 s resets the limit");
+  } finally {
+    Date.now = realNow;
+    harness.app.quit();
+  }
+});
+
+test("fetchHealth accepts only a token-usage-widget health body", async () => {
+  const http = require("node:http");
+  const { fetchHealth } = require("../desktop/server-launch.cjs");
+  let body = { status: "ok" };
+  const server = http.createServer((_req, res) => res.end(JSON.stringify(body)));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    assert.equal((await fetchHealth("127.0.0.1", port)).ok, false, "a foreign {status:ok} is not ours");
+    body = { status: "ok", app: "token-usage-widget", pid: 4242, fixture: false };
+    assert.deepEqual(await fetchHealth("127.0.0.1", port), { ok: true, fixture: false, pid: 4242 });
+  } finally {
+    server.close();
+  }
+});
+
+test("ensureUsageServer does not adopt a foreign healthy service", async () => {
+  let spawned = false;
+  const result = await ensureUsageServer({
+    platform: "win32",
+    port: 4321,
+    maxAttempts: 1,
+    // Real fetchHealth maps a foreign body to ok:false.
+    fetchHealth: async (_host, port) => (port === 4321 ? { ok: false, fixture: false, pid: null } : { ok: true, fixture: false }),
+    isPortAvailable: async () => false,
+    allocateFreeLoopbackPort: async () => 7001,
+    freePort: () => assert.fail("never free a port held by another app"),
+    resolveNodeBinary: () => "node",
+    env: { USAGE_FIXTURE: "0" },
+    sleep: async () => {},
+    fs: createFakeFileSystem(),
+    spawn: () => {
+      spawned = true;
+      return createFakeChild();
+    },
+  });
+  assert.equal(spawned, true);
+  assert.equal(result.reused, false);
+  assert.equal(result.endpoint.port, 7001);
+});
+
+test("ensureUsageServer appends a start header, rotates a big log, and passes WIDGET_PARENT_PID", async () => {
+  const fileSystem = createFakeFileSystem();
+  const ops = [];
+  fileSystem.writeFileSync = () => assert.fail("the log must not be truncated");
+  fileSystem.statSync = () => ({ size: 2 * 1024 * 1024 });
+  fileSystem.renameSync = (from, to) => ops.push(["rename", from, to]);
+  fileSystem.appendFileSync = (file, text) => ops.push(["append", file, text]);
+  let env;
+  await ensureUsageServer({
+    platform: "win32",
+    port: 4321,
+    logPath: "C:\\temp\\server.log",
+    maxAttempts: 1,
+    fetchHealth: async () => (env ? { ok: true, fixture: false } : null),
+    isPortAvailable: async () => true,
+    resolveNodeBinary: () => "node",
+    env: { USAGE_FIXTURE: "0" },
+    sleep: async () => {},
+    fs: fileSystem,
+    spawn: (_bin, _args, options) => {
+      env = options.env;
+      return createFakeChild();
+    },
+  });
+  assert.deepEqual(ops[0], ["rename", "C:\\temp\\server.log", "C:\\temp\\server.log.1"]);
+  assert.equal(ops[1][0], "append");
+  assert.match(ops[1][2], /starting server with/);
+  assert.equal(env.WIDGET_PARENT_PID, String(process.pid));
+});
+
+test("freePort kills only the pid that our health body reports", async () => {
+  const { freePort } = require("../desktop/server-launch.cjs");
+  const kills = [];
+  const execFileSync = (cmd, args) => kills.push([cmd, ...args]);
+  const foreign = async () => ({ ok: false, fixture: false, pid: null });
+  assert.equal(await freePort(4321, "127.0.0.1", { platform: "win32", fetchHealth: foreign, execFileSync }), false);
+  assert.deepEqual(kills, []);
+  const ours = async () => ({ ok: true, fixture: false, pid: 4242 });
+  assert.equal(await freePort(4321, "127.0.0.1", { platform: "win32", fetchHealth: ours, execFileSync }), true);
+  assert.deepEqual(kills, [["taskkill", "/PID", "4242", "/T", "/F"]]);
 });

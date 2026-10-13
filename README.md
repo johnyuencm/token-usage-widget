@@ -6,7 +6,7 @@ Local always-on-top widget + browser dashboard for the AI harnesses you actually
 
 [![npm](https://img.shields.io/npm/v/token-usage-widget.svg)](https://www.npmjs.com/package/token-usage-widget)
 [![License: MIT](https://img.shields.io/badge/License-MIT-teal.svg)](./LICENSE)
-[![Node 18+](https://img.shields.io/badge/node-18%2B-brightgreen.svg)](https://nodejs.org)
+[![Node 22.13+](https://img.shields.io/badge/node-22.13%2B-brightgreen.svg)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/widget-Windows%20%7C%20macOS-0078D4.svg)](#corner-widget)
 
 **Install:** `npm i -g token-usage-widget` → run `tuw`  
@@ -67,7 +67,7 @@ tuw start
 | `tuw start` | Dashboard server only |
 | `tuw startup install` | Enable login Startup (platform-specific) |
 
-**Requirements:** Node.js 18+ (CI uses 22). Windows or macOS 13+ (Intel or Apple Silicon) for the Electron widget. Cursor auth is read from the desktop `state.vscdb` via Node's built-in SQLite (or `sqlite3` on `PATH`). No DMG/EXE signing or notarization — distribution is the npm package + Electron runtime.
+**Requirements:** Node.js 22.13+ (needed for the built-in `node:sqlite` Cursor read). Windows or macOS 13+ (Intel or Apple Silicon) for the Electron widget. Cursor auth is read from the desktop `state.vscdb` via Node's built-in SQLite (or `sqlite3` on `PATH`). No DMG/EXE signing or notarization — distribution is the npm package + Electron runtime.
 
 Config lives under `%APPDATA%/token-usage-widget/config.json` (Windows) or `~/.config/token-usage-widget/config.json` (macOS/Linux). Override with `TOKEN_USAGE_WIDGET_CONFIG`. A one-time migrate copies a checkout `./config.json` into that location when missing.
 
@@ -175,7 +175,7 @@ macOS 13+ on Intel and Apple Silicon. Install via npm (`tuw`) or from a source c
 - **Hide and quit:** hide restores from the menu bar; custom ×, native close, menu Quit, and Command-Q converge on one quit path that stops only an owned usage-server child.
 - **Login launch:** successful setup modes install or refresh a per-user LaunchAgent. `widget:startup` / `widget:startup:disable` / `widget:status` manage it without deleting `config.json`.
 
-**Automated verification vs. real-Mac observation:** CI passes `npm run verify` on Windows, macOS Intel, and Apple Silicon runners. Real interactive menu-bar, Spaces, full-screen, login-session, and live local Cursor/Firefox discovery on macOS hardware is **unverified** — the maintainer has no Mac. See the [evidence index](docs/macos-widget/evidence-index.md).
+**Automated verification vs. real-Mac observation:** CI passes `npm run verify` on Windows, macOS Intel, and Apple Silicon runners. Real interactive menu-bar, Spaces, full-screen, login-session, and live local Cursor discovery on macOS hardware is **unverified** — the maintainer has no Mac. See the [evidence index](docs/macos-widget/evidence-index.md).
 
 ## Dashboard & API
 
@@ -225,7 +225,7 @@ npm test
 npm run verify
 ```
 
-Fixture demo (all eight providers):
+Fixture demo (all seven providers):
 
 ```powershell
 $env:USAGE_FIXTURE='1'; $env:USAGE_FIXTURE_ALL='1'; npm start

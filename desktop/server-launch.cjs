@@ -16,6 +16,8 @@ const ROOT = path.join(__dirname, "..");
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4321;
 const SERVER_LOG = path.join(os.tmpdir(), "token-usage-dashboard-server.log");
+const SERVER_APP = "token-usage-widget";
+const LOG_ROTATE_BYTES = 1024 * 1024;
 
 function buildEndpoint(host, port) {
   const normalizedHost = String(host);
@@ -76,7 +78,9 @@ function healthCheck(host = DEFAULT_HOST, port = DEFAULT_PORT, timeoutMs = 2000)
 }
 
 /**
- * @returns {Promise<{ ok: boolean, fixture: boolean } | null>}
+ * `ok` is true only for our own server (`app === SERVER_APP`), not for any
+ * other service that answers `{"status":"ok"}` on the port.
+ * @returns {Promise<{ ok: boolean, fixture: boolean, pid: number | null } | null>}
  */
 function fetchHealth(host = DEFAULT_HOST, port = DEFAULT_PORT, timeoutMs = 2000) {
   return new Promise((resolve) => {
@@ -90,7 +94,11 @@ function fetchHealth(host = DEFAULT_HOST, port = DEFAULT_PORT, timeoutMs = 2000)
         }
         try {
           const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-          resolve({ ok: body.status === "ok", fixture: Boolean(body.fixture) });
+          resolve({
+            ok: body.status === "ok" && body.app === SERVER_APP,
+            fixture: Boolean(body.fixture),
+            pid: Number.isInteger(body.pid) && body.pid > 0 ? body.pid : null,
+          });
         } catch {
           resolve(null);
         }
@@ -104,31 +112,36 @@ function fetchHealth(host = DEFAULT_HOST, port = DEFAULT_PORT, timeoutMs = 2000)
   });
 }
 
-/** Best-effort: stop whatever is listening so we can restart in the right mode. */
-function freePort(port) {
-  if (process.platform !== "win32") return;
+/**
+ * Best-effort: stop our own server on the port so we can restart in the right mode.
+ * Kills only the pid that our /api/health reports, never an unrelated listener.
+ * @returns {Promise<boolean>} true when a kill was sent
+ */
+async function freePort(port, host = DEFAULT_HOST, options = {}) {
+  if ((options.platform || process.platform) !== "win32") return false;
+  const health = await (options.fetchHealth || fetchHealth)(host, port);
+  if (!health?.ok || !health.pid) return false;
   try {
-    const out = execFileSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        `Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`,
-      ],
-      { encoding: "utf8", windowsHide: true },
-    );
-    for (const tok of out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)) {
-      const pid = Number(tok);
-      if (!Number.isFinite(pid) || pid <= 0) continue;
-      try {
-        execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-      } catch {
-        // ignore
-      }
+    (options.execFileSync || execFileSync)("taskkill", ["/PID", String(health.pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Append to the server log; move a log over 1 MB to `.log.1` first. */
+function startServerLog(fileSystem, logPath, header) {
+  try {
+    if (fileSystem.statSync(logPath).size > LOG_ROTATE_BYTES) {
+      fileSystem.renameSync(logPath, `${logPath}.1`);
     }
   } catch {
-    // ignore
+    // Missing log or a locked file: keep appending.
   }
+  fileSystem.appendFileSync(logPath, header, "utf8");
 }
 
 /** Electron's process.execPath is electron.exe — never use it to run the API server. */
@@ -259,7 +272,7 @@ async function ensureUsageServer(options = {}) {
       logPath,
       `[${new Date().toISOString()}] port ${port} fixture=${existing.fixture} but want ${wantFixture}; freeing\n`,
     );
-    freePortFn(port);
+    await freePortFn(port, host);
     await sleep(500);
   } else if (existing?.ok || !(await isPortAvailableFn(host, port))) {
     // Occupied, healthy-but-not-ours (Darwin), or Windows excluded-port EACCES.
@@ -290,9 +303,15 @@ async function ensureUsageServer(options = {}) {
     );
   }
 
-  fileSystem.writeFileSync(logPath, `[${new Date().toISOString()}] starting server with ${nodeBin}\n`, "utf8");
+  startServerLog(fileSystem, logPath, `\n[${new Date().toISOString()}] starting server with ${nodeBin}\n`);
   const logFd = fileSystem.openSync(logPath, "a");
-  const env = { ...mergedEnv, PORT: String(launchPort), USAGE_HOST: host };
+  // The server exits by itself when this pid is gone, so an Electron crash leaves no orphan.
+  const env = {
+    ...mergedEnv,
+    PORT: String(launchPort),
+    USAGE_HOST: host,
+    WIDGET_PARENT_PID: String(process.pid),
+  };
   delete env.ELECTRON_RUN_AS_NODE;
   // Default launch is live; only keep fixture when explicitly requested.
   if (!wantFixture) delete env.USAGE_FIXTURE;
@@ -353,6 +372,7 @@ module.exports = {
   DEFAULT_HOST,
   DEFAULT_PORT,
   SERVER_LOG,
+  SERVER_APP,
   buildEndpoint,
   allocateFreeLoopbackPort,
   isLoopbackPortAvailable,

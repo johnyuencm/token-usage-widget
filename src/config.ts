@@ -1,5 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { chmodSync, copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -144,19 +144,49 @@ export function tightenConfigFileMode(filePath: string): void {
   }
 }
 
+/**
+ * Parse config.json text. Strips a UTF-8 BOM (Notepad adds one) and drops the
+ * removed `opencode` block so its old cookie is not carried into the next write.
+ * Throws on bad JSON so callers never overwrite the file with an empty object.
+ */
+export function parseConfigText(raw: string, p: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Config at ${p} is not valid JSON; fix or delete it`);
+  }
+  const obj = parsed as Record<string, unknown>;
+  delete obj.opencode;
+  return obj;
+}
+
+/** Write config JSON atomically (tmp + rename) so a crash never leaves a truncated file. */
+export function writeConfigFile(p: string, data: Record<string, unknown>): void {
+  const tmp = `${p}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, { encoding: "utf8", mode: SECRET_FILE_MODE });
+  // `mode` only applies on create; tighten a stale .tmp left by a crash.
+  tightenConfigFileMode(tmp);
+  renameSync(tmp, p);
+}
+
 export async function loadConfig(): Promise<Config> {
   migrateCwdConfigIfNeeded();
   const cfg = defaultConfig();
   const envPort = process.env.PORT;
   if (envPort && Number.isFinite(Number(envPort))) cfg.server.port = Number(envPort);
 
-  for (const p of [exampleConfigPath(), configPath()]) {
-    if (!existsSync(p)) continue;
+  // config.example.json is documentation only: merging it would turn on
+  // openai/cursor before setup. Every provider stays off until config.json says so.
+  const p = configPath();
+  if (existsSync(p)) {
     // Existing configs from before 0600: tighten on load, then read.
-    if (p === configPath()) tightenConfigFileMode(p);
+    tightenConfigFileMode(p);
     try {
-      const raw = await readFile(p, "utf8");
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const parsed = parseConfigText(await readFile(p, "utf8"), p);
       if (parsed.providers) cfg.providers = mergeProviders(cfg.providers, parsed.providers);
 
       const or = parsed.openrouter as Record<string, unknown> | undefined;
@@ -213,21 +243,12 @@ export async function resolveServerAuth(cfg: Config): Promise<string | null> {
 /** Merge `server.lanToken` into config.json without dropping existing keys. */
 async function persistLanToken(token: string): Promise<void> {
   const p = configPath();
-  let merged: Record<string, unknown> = {};
-  if (existsSync(p)) {
-    try {
-      merged = JSON.parse(await readFile(p, "utf8")) as Record<string, unknown>;
-    } catch {
-      merged = {};
-    }
-  }
+  // A bad file throws here instead of being replaced by `{}` (that would drop secrets).
+  const merged = existsSync(p) ? parseConfigText(await readFile(p, "utf8"), p) : {};
   const server = (merged.server as Record<string, unknown> | undefined) ?? {};
   merged.server = { ...server, lanToken: token };
   ensureConfigDir();
-  await writeFile(p, `${JSON.stringify(merged, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: SECRET_FILE_MODE,
-  });
+  writeConfigFile(p, merged);
 }
 
 export function isFixtureMode(): boolean {

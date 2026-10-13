@@ -41,6 +41,7 @@ export async function fetchGrokUsage(cfg: Config): Promise<ProviderUsage> {
         "x-xai-token-auth": "xai-grok-cli",
         Accept: "application/json",
       },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
       const reason = `Grok billing HTTP ${res.status}`;

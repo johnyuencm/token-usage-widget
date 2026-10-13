@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { Config } from "../config.js";
@@ -8,25 +8,21 @@ import { unavailableAll, okWindow } from "../types.js";
 /**
  * Claude Code / Claude.ai subscription usage via undocumented OAuth usage endpoint.
  * Auth: config/env token, else ~/.claude/.credentials.json (claudeAiOauth.accessToken).
- * File-backed tokens auto-refresh via platform.claude.com when expired.
+ * The token is read only. The widget never refreshes it and never writes the
+ * credentials file; Claude Code owns that file (run `claude` to refresh).
  *
  * Consumer plans populate five_hour / seven_day windows.
  * Enterprise / Teams credit plans populate spend (or extra_usage) in USD.
  */
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
-const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const TOKEN_EXPIRY_SKEW_MS = 60_000;
 export const CLAUDE_BACKOFF_BASE_MS = 60_000;
 export const CLAUDE_BACKOFF_MAX_MS = 60 * 60_000;
 
 interface ClaudeOAuthCreds {
   accessToken: string;
-  refreshToken: string | null;
   expiresAt: number | null;
-  credPath: string | null;
-  fromFile: boolean;
 }
 
 interface BackoffState {
@@ -37,7 +33,6 @@ interface BackoffState {
 /** Soft cache so 429s don't wipe the last good spend/windows from the widget. */
 let cachedOk: ProviderUsage | null = null;
 let usageBackoff: BackoffState = { untilMs: 0, streak: 0 };
-let refreshBackoff: BackoffState = { untilMs: 0, streak: 0 };
 let nowFn: () => number = () => Date.now();
 
 function nowMs(): number {
@@ -93,7 +88,8 @@ function rateLimitUsage(untilMs: number, fetchedAt: string): ProviderUsage {
 }
 
 function holdForBackoff(untilMs: number, fetchedAt: string): ProviderUsage {
-  if (cachedOk) return { ...cachedOk, fetchedAt };
+  // Keep the cached fetchedAt so old data does not show as fresh.
+  if (cachedOk) return cachedOk;
   return rateLimitUsage(untilMs, fetchedAt);
 }
 
@@ -103,13 +99,7 @@ function claudeCredentialsPath(): string {
 
 function readClaudeOAuth(cfg: Config): ClaudeOAuthCreds | null {
   if (cfg.claude.accessToken) {
-    return {
-      accessToken: cfg.claude.accessToken,
-      refreshToken: null,
-      expiresAt: null,
-      credPath: null,
-      fromFile: false,
-    };
+    return { accessToken: cfg.claude.accessToken, expiresAt: null };
   }
   const credPath = claudeCredentialsPath();
   if (!existsSync(credPath)) return null;
@@ -117,17 +107,10 @@ function readClaudeOAuth(cfg: Config): ClaudeOAuthCreds | null {
     const raw = JSON.parse(readFileSync(credPath, "utf8")) as Record<string, unknown>;
     const oauth = raw.claudeAiOauth as Record<string, unknown> | undefined;
     if (typeof oauth?.accessToken !== "string" || !oauth.accessToken.trim()) return null;
-    const refreshToken =
-      typeof oauth.refreshToken === "string" && oauth.refreshToken.trim()
-        ? oauth.refreshToken.trim()
-        : null;
     const expiresAt = Number(oauth.expiresAt);
     return {
       accessToken: oauth.accessToken.trim(),
-      refreshToken,
       expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
-      credPath,
-      fromFile: true,
     };
   } catch {
     return null;
@@ -141,99 +124,6 @@ function readClaudeToken(cfg: Config): string | null {
 function tokenExpired(expiresAt: number | null, atMs = nowMs()): boolean {
   if (expiresAt === null) return false;
   return atMs >= expiresAt - TOKEN_EXPIRY_SKEW_MS;
-}
-
-function writeClaudeOAuthFile(
-  credPath: string,
-  patch: { accessToken: string; refreshToken: string; expiresAt: number },
-): void {
-  const raw = JSON.parse(readFileSync(credPath, "utf8")) as Record<string, unknown>;
-  const oauth = (raw.claudeAiOauth as Record<string, unknown> | undefined) ?? {};
-  raw.claudeAiOauth = {
-    ...oauth,
-    accessToken: patch.accessToken,
-    refreshToken: patch.refreshToken,
-    expiresAt: patch.expiresAt,
-  };
-  const tmp = `${credPath}.tmp`;
-  // Credentials: keep the temp file 0600 so the rename never widens the original
-  // (Claude Code keeps ~/.claude/.credentials.json at 0600). `mode` only applies on
-  // create, so chmod too in case a stale .tmp survived a crash. No-op on Windows.
-  writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  try {
-    chmodSync(tmp, 0o600);
-  } catch {
-    // Mounts without POSIX modes (FAT, some network shares) throw here; saving the
-    // rotated refresh token matters more than the mode, so carry on.
-  }
-  renameSync(tmp, credPath);
-}
-
-async function refreshClaudeAccessToken(refreshToken: string): Promise<{
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number;
-} | null> {
-  if (inBackoff(refreshBackoff)) return null;
-
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "User-Agent": claudeUserAgent(),
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: OAUTH_CLIENT_ID,
-    }),
-  });
-
-  if (res.status === 429) {
-    refreshBackoff = apply429(refreshBackoff, res.headers.get("retry-after"));
-    return null;
-  }
-  if (!res.ok) return null;
-
-  const body = (await res.json()) as Record<string, unknown>;
-  const accessToken = typeof body.access_token === "string" ? body.access_token.trim() : "";
-  const nextRefresh =
-    typeof body.refresh_token === "string" ? body.refresh_token.trim() : refreshToken;
-  const expiresIn = Number(body.expires_in);
-  if (!accessToken) return null;
-  refreshBackoff = clearBackoff();
-  return {
-    accessToken,
-    refreshToken: nextRefresh,
-    expiresAt: nowMs() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 28_800) * 1000,
-  };
-}
-
-async function ensureFreshClaudeToken(cfg: Config): Promise<ClaudeOAuthCreds | null> {
-  const creds = readClaudeOAuth(cfg);
-  if (!creds) return null;
-  if (!creds.fromFile || !creds.refreshToken || !creds.credPath) return creds;
-  if (!tokenExpired(creds.expiresAt)) return creds;
-
-  const refreshed = await refreshClaudeAccessToken(creds.refreshToken);
-  if (!refreshed) return creds;
-
-  try {
-    writeClaudeOAuthFile(creds.credPath, refreshed);
-  } catch (err) {
-    // Token refreshed but could not be persisted: the next poll will need to
-    // refresh again. Say so distinctly instead of reporting a stale token.
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`claude: refresh succeeded but saving ${creds.credPath} failed: ${msg}`);
-  }
-  return {
-    accessToken: refreshed.accessToken,
-    refreshToken: refreshed.refreshToken,
-    expiresAt: refreshed.expiresAt,
-    credPath: creds.credPath,
-    fromFile: true,
-  };
 }
 
 function claudeUserAgent(): string {
@@ -346,14 +236,21 @@ function usageFromBody(body: Record<string, unknown>, fetchedAt: string): Provid
   };
 }
 
-function authErrorReason(status: number, refreshBlocked: boolean): string {
-  if (status === 401) {
-    if (refreshBlocked) {
-      return "Claude token expired; auth refresh rate limited. Retry later or run: claude auth login";
-    }
-    return "Claude token expired. Run: claude auth login";
-  }
+const TOKEN_EXPIRED_REASON = "Claude token expired — run `claude` to refresh it.";
+
+function authErrorReason(status: number): string {
+  if (status === 401) return TOKEN_EXPIRED_REASON;
   return `Claude usage HTTP ${status}`;
+}
+
+function errorUsage(reason: string, fetchedAt: string): ProviderUsage {
+  return {
+    provider: "claude",
+    label: "Claude",
+    windows: unavailableAll(reason),
+    fetchedAt,
+    error: reason,
+  };
 }
 
 async function fetchUsageWithToken(token: string): Promise<Response> {
@@ -364,80 +261,36 @@ async function fetchUsageWithToken(token: string): Promise<Response> {
       "User-Agent": claudeUserAgent(),
       Accept: "application/json",
     },
+    signal: AbortSignal.timeout(10_000),
   });
 }
 
 export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
   const fetchedAt = new Date().toISOString();
-  let creds = await ensureFreshClaudeToken(cfg);
-  if (!creds?.accessToken) {
-    const reason =
-      "No Claude credentials. Sign in with Claude Code, or set CLAUDE_ACCESS_TOKEN / config.claude.accessToken.";
-    return {
-      provider: "claude",
-      label: "Claude",
-      windows: unavailableAll(reason),
-      fetchedAt,
-      error: reason,
-    };
-  }
-
-  if (tokenExpired(creds.expiresAt) && inBackoff(refreshBackoff)) {
-    return holdForBackoff(refreshBackoff.untilMs, fetchedAt);
-  }
-  if (inBackoff(usageBackoff)) {
-    return holdForBackoff(usageBackoff.untilMs, fetchedAt);
-  }
-
+  // Everything, the token read too, stays inside the try: one provider failure
+  // must not reject Promise.all for /api/usage.
   try {
-    let res = await fetchUsageWithToken(creds.accessToken);
-    if (res.status === 401 && creds.fromFile && creds.refreshToken && creds.credPath) {
-      const refreshBlocked = inBackoff(refreshBackoff);
-      const refreshed = refreshBlocked ? null : await refreshClaudeAccessToken(creds.refreshToken);
-      if (refreshed) {
-        try {
-          writeClaudeOAuthFile(creds.credPath, refreshed);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`claude: refresh succeeded but saving ${creds.credPath} failed: ${msg}`);
-        }
-        creds = {
-          accessToken: refreshed.accessToken,
-          refreshToken: refreshed.refreshToken,
-          expiresAt: refreshed.expiresAt,
-          credPath: creds.credPath,
-          fromFile: true,
-        };
-        res = await fetchUsageWithToken(creds.accessToken);
-      } else if (inBackoff(refreshBackoff) || tokenExpired(creds.expiresAt)) {
-        if (inBackoff(refreshBackoff)) {
-          return holdForBackoff(refreshBackoff.untilMs, fetchedAt);
-        }
-        const reason = authErrorReason(401, false);
-        if (cachedOk) return { ...cachedOk, fetchedAt };
-        return {
-          provider: "claude",
-          label: "Claude",
-          windows: unavailableAll(reason),
-          fetchedAt,
-          error: reason,
-        };
-      }
+    const creds = readClaudeOAuth(cfg);
+    if (!creds?.accessToken) {
+      return errorUsage(
+        "No Claude credentials. Sign in with Claude Code, or set CLAUDE_ACCESS_TOKEN / config.claude.accessToken.",
+        fetchedAt,
+      );
     }
+    if (tokenExpired(creds.expiresAt)) return errorUsage(TOKEN_EXPIRED_REASON, fetchedAt);
+    if (inBackoff(usageBackoff)) {
+      return holdForBackoff(usageBackoff.untilMs, fetchedAt);
+    }
+
+    const res = await fetchUsageWithToken(creds.accessToken);
+    if (res.status === 401) return errorUsage(TOKEN_EXPIRED_REASON, fetchedAt);
     if (res.status === 429) {
       usageBackoff = apply429(usageBackoff, res.headers.get("retry-after"));
       return holdForBackoff(usageBackoff.untilMs, fetchedAt);
     }
     if (!res.ok) {
-      const reason = authErrorReason(res.status, inBackoff(refreshBackoff));
-      if (cachedOk) return { ...cachedOk, fetchedAt };
-      return {
-        provider: "claude",
-        label: "Claude",
-        windows: unavailableAll(reason),
-        fetchedAt,
-        error: reason,
-      };
+      if (cachedOk) return cachedOk;
+      return errorUsage(authErrorReason(res.status), fetchedAt);
     }
     const body = (await res.json()) as Record<string, unknown>;
     const usage = usageFromBody(body, fetchedAt);
@@ -446,14 +299,8 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
     return usage;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (cachedOk) return { ...cachedOk, fetchedAt };
-    return {
-      provider: "claude",
-      label: "Claude",
-      windows: unavailableAll(msg),
-      fetchedAt,
-      error: msg,
-    };
+    if (cachedOk) return cachedOk;
+    return errorUsage(msg, fetchedAt);
   }
 }
 
@@ -465,9 +312,6 @@ export const __test = {
   readClaudeToken,
   readClaudeOAuth,
   tokenExpired,
-  refreshClaudeAccessToken,
-  ensureFreshClaudeToken,
-  writeClaudeOAuthFile,
   authErrorReason,
   nextClaudeBackoffMs,
   CLAUDE_BACKOFF_MAX_MS,
@@ -477,7 +321,6 @@ export const __test = {
   resetCache() {
     cachedOk = null;
     usageBackoff = clearBackoff();
-    refreshBackoff = clearBackoff();
     nowFn = () => Date.now();
   },
 };
