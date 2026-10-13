@@ -92,3 +92,9 @@ Severity: H = high, M = medium, L = low. Status: R = reproduced, C = confirmed b
 5. L2 + L3 + L4: revive after 3 misses, reset the counter after 60 s healthy, and append to the log.
 6. A1: stop writing to `~/.claude/.credentials.json`. Show "run `claude`" on a 401.
 7. The rest, by severity.
+
+## Open items
+
+- Not in scope: GitHub Dependabot reports 67 alerts on `master` (25 high, 37 moderate, 5 low). Review them separately.
+- The OpenCode removal and the logon and orphan-server fixes are still uncommitted in the working tree. They wait for the owner's commit decision.
+- No fixes from this review are made yet. The next step is the fix order above, after owner approval.
