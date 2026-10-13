@@ -466,9 +466,9 @@ test("package.json test list includes login-launch tests", async () => {
   assert.match(pkg.default.scripts["widget:startup:disable"] ?? "", /startup\.ts remove/);
 });
 
-test("startup CLI dispatches Win32 install to PowerShell -InstallStartup and does not touch login-launch", async () => {
-  const spawned: { cmd: string; args: string[] }[] = [];
-  const fakeSpawn = ((cmd: string, args: string[]) => {
+test("startup CLI Win32 install uses electron.exe --install-startup, never PowerShell", async () => {
+  const spawned: { cmd: string; args: readonly string[] }[] = [];
+  const fakeSpawn = ((cmd: string, args: readonly string[]) => {
     spawned.push({ cmd, args });
     const child = new EventEmitter();
     queueMicrotask(() => child.emit("close", 0));
@@ -478,9 +478,11 @@ test("startup CLI dispatches Win32 install to PowerShell -InstallStartup and doe
   // Use a dummy seams object since win32 install should never touch it.
   const dummySeams = {} as LoginLaunchSeams;
   await dispatch("install", "win32", dummySeams, fakeSpawn, (m) => logs.push(m));
-  assert.equal(spawned.length, 1, "PowerShell was spawned");
-  assert.equal(spawned[0].cmd, "powershell");
-  assert.ok(spawned[0].args.includes("-InstallStartup"));
+  assert.equal(spawned.length, 2, "install, then launch");
+  assert.match(spawned[0].cmd, /electron[\\/]dist[\\/]electron\.exe$/);
+  assert.ok(spawned[0].args.includes("--install-startup"));
+  assert.match(String(spawned[1].args[0]), /start-widget\.cjs$/);
+  assert.ok(spawned.every((s) => !/powershell/i.test(s.cmd)));
   assert.deepEqual(logs, []);
 });
 

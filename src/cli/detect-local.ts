@@ -1,7 +1,7 @@
 /**
  * Detect which local coding agents are installed / signed in on this machine.
- * Used by `tuw setup --defaults` so first-run enables Codex, Cursor, Claude,
- * and OpenCode when they are actually present — not a hardcoded pair.
+ * Used by `tuw setup --defaults` so first-run enables Codex, Cursor, and Claude
+ * when they are actually present — not a hardcoded pair.
  */
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -17,7 +17,6 @@ import { resolveCursorStateDbPath } from "../adapters/cursor.js";
 
 export const LOCAL_AGENT_IDS: readonly ProviderId[] = [
   "openai",
-  "opencode",
   "cursor",
   "claude",
 ];
@@ -63,12 +62,6 @@ export function detectLocalAgentFlags(seams: DetectLocalSeams = {}): ProviderFla
     exists(path.join(homeDir, ".claude", ".credentials.json")) ||
     which("claude");
 
-  flags.opencode =
-    Boolean(env.OPENCODE_GO_AUTH_COOKIE?.trim()) ||
-    which("opencode") ||
-    exists(path.join(homeDir, ".local", "share", "opencode", "opencode.db")) ||
-    exists(path.join(homeDir, ".local", "share", "opencode", "auth.json"));
-
   return flags;
 }
 
@@ -84,7 +77,6 @@ export function resolveSetupDefaultFlags(
   return {
     ...DEFAULT_ENABLED,
     openai: detected.openai,
-    opencode: detected.opencode,
     cursor: detected.cursor,
     claude: detected.claude,
   };

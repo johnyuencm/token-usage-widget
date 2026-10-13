@@ -1,10 +1,10 @@
 # Launch Token Usage corner widget detached (no terminal needed after start).
 # Usage: pwsh -File scripts/start-widget.ps1
-# Optional: -Fixture  -InstallStartup
+# Optional: -Fixture
+# Shortcuts (Start Menu, Startup) are written by the widget itself; see `tuw startup install`.
 
 param(
-  [switch]$Fixture,
-  [switch]$InstallStartup
+  [switch]$Fixture
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,33 +35,3 @@ if ($Fixture) {
 
 $proc = Start-Process -FilePath $Electron -ArgumentList "`"$Root`"" -WorkingDirectory $Root -PassThru -WindowStyle Normal
 Write-Host "Widget started (pid $($proc.Id)). You can close this terminal."
-
-function Write-WidgetShortcut([string]$ShortcutPath, [int]$WindowStyle) {
-  $cmd = Join-Path $Root "scripts\start-widget.cmd"
-  $wsh = New-Object -ComObject WScript.Shell
-  $sc = $wsh.CreateShortcut($ShortcutPath)
-  $sc.TargetPath = $cmd
-  $sc.WorkingDirectory = $Root
-  $sc.WindowStyle = $WindowStyle
-  $sc.Description = "Token Usage always-on-top corner widget"
-  $ico = Join-Path $Root "desktop\icons\icon.ico"
-  if (Test-Path $ico) {
-    $sc.IconLocation = "$ico,0"
-  } elseif (Test-Path $Electron) {
-    $sc.IconLocation = "$Electron,0"
-  }
-  $sc.Save()
-}
-
-# Always install a Start Menu shortcut so the widget is searchable like a normal app.
-$programs = [Environment]::GetFolderPath("Programs")
-$startMenuPath = Join-Path $programs "Token Usage Widget.lnk"
-Write-WidgetShortcut $startMenuPath 7
-Write-Host "Start Menu shortcut installed: $startMenuPath"
-
-if ($InstallStartup) {
-  $startup = [Environment]::GetFolderPath("Startup")
-  $shortcutPath = Join-Path $startup "Token Usage Widget.lnk"
-  Write-WidgetShortcut $shortcutPath 7
-  Write-Host "Startup shortcut installed: $shortcutPath"
-}

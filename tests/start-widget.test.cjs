@@ -32,13 +32,9 @@ test("the documented background npm command uses the platform dispatcher and run
   assert.match(packageJson.scripts.test, /tests\/start-widget\.test\.cjs/);
 });
 
-test("Windows startup script writes Start Menu and Startup shortcuts with the widget icon", () => {
+test("Windows PowerShell launcher no longer writes shortcuts; the widget icon ships for Electron's shortcuts", () => {
   const ps1 = fs.readFileSync(path.join(__dirname, "..", "scripts", "start-widget.ps1"), "utf8");
-  assert.match(ps1, /GetFolderPath\(["']Programs["']\)/);
-  assert.match(ps1, /GetFolderPath\(["']Startup["']\)/);
-  assert.match(ps1, /icon\.ico/);
-  assert.match(ps1, /IconLocation/);
-  assert.match(ps1, /Write-WidgetShortcut/);
+  assert.doesNotMatch(ps1, /InstallStartup|GetFolderPath\(["']Startup["']\)|CreateShortcut/);
   assert.equal(fs.existsSync(path.join(__dirname, "..", "desktop", "icons", "icon.ico")), true);
 });
 

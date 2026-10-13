@@ -46,25 +46,11 @@ export function ensureConfigDir(): void {
   mkdirSync(path.dirname(configPath()), { recursive: true });
 }
 
-export interface OpenCodeCaps {
-  five_hour: number | null;
-  week: number | null;
-  month: number | null;
-}
-
 export type ProviderFlags = Record<ProviderId, boolean>;
 
 export interface Config {
   /** Which providers to poll. Missing keys default per DEFAULT_ENABLED. */
   providers: ProviderFlags;
-  opencode: {
-    dbPath: string;
-    caps: OpenCodeCaps;
-    go: {
-      workspaceId: string | null;
-      authCookie: string | null;
-    };
-  };
   openrouter: { apiKey: string | null };
   kimi: { apiKey: string | null };
   zai: { apiKey: string | null };
@@ -82,12 +68,9 @@ export interface Config {
   ui: UiSettings;
 }
 
-const DEFAULT_DB_PATH = path.join(os.homedir(), ".local", "share", "opencode", "opencode.db");
-
 /** Cold start: show nothing until `npm run setup` (or explicit config.providers). */
 export const DEFAULT_ENABLED: ProviderFlags = {
   openai: false,
-  opencode: false,
   cursor: false,
   claude: false,
   openrouter: false,
@@ -99,7 +82,6 @@ export const DEFAULT_ENABLED: ProviderFlags = {
 /** Fallback for `npm run setup:defaults` when no local agents are detected. */
 export const SETUP_DEFAULTS_ENABLED: ProviderFlags = {
   openai: true,
-  opencode: false,
   cursor: true,
   claude: false,
   openrouter: false,
@@ -111,11 +93,6 @@ export const SETUP_DEFAULTS_ENABLED: ProviderFlags = {
 function defaultConfig(): Config {
   return {
     providers: { ...DEFAULT_ENABLED },
-    opencode: {
-      dbPath: DEFAULT_DB_PATH,
-      caps: { five_hour: null, week: null, month: null },
-      go: { workspaceId: null, authCookie: null },
-    },
     openrouter: { apiKey: null },
     kimi: { apiKey: null },
     zai: { apiKey: null },
@@ -128,22 +105,6 @@ function defaultConfig(): Config {
 
 function isWindowId(v: unknown): v is WindowId {
   return v === "five_hour" || v === "week" || v === "month";
-}
-
-function mergeCaps(base: OpenCodeCaps, incoming: unknown): OpenCodeCaps {
-  if (!incoming || typeof incoming !== "object") return base;
-  const src = incoming as Record<string, unknown>;
-  const out = { ...base };
-  for (const key of Object.keys(out) as (keyof OpenCodeCaps)[]) {
-    const val = src[key];
-    if (val === null || typeof val === "number") {
-      out[key] = val;
-    } else if (typeof val === "string" && val.trim() !== "") {
-      const n = Number(val);
-      out[key] = Number.isFinite(n) ? n : null;
-    }
-  }
-  return out;
 }
 
 function mergeProviders(base: ProviderFlags, incoming: unknown): ProviderFlags {
@@ -186,8 +147,6 @@ export function tightenConfigFileMode(filePath: string): void {
 export async function loadConfig(): Promise<Config> {
   migrateCwdConfigIfNeeded();
   const cfg = defaultConfig();
-  const envDb = process.env.OPENCODE_DB_PATH;
-  if (envDb && envDb.trim() !== "") cfg.opencode.dbPath = envDb;
   const envPort = process.env.PORT;
   if (envPort && Number.isFinite(Number(envPort))) cfg.server.port = Number(envPort);
 
@@ -199,19 +158,6 @@ export async function loadConfig(): Promise<Config> {
       const raw = await readFile(p, "utf8");
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       if (parsed.providers) cfg.providers = mergeProviders(cfg.providers, parsed.providers);
-
-      const oc = parsed.opencode as Record<string, unknown> | undefined;
-      if (oc) {
-        if (typeof oc.dbPath === "string" && oc.dbPath.trim() !== "" && !envDb) {
-          cfg.opencode.dbPath = oc.dbPath;
-        }
-        if (oc.caps) cfg.opencode.caps = mergeCaps(cfg.opencode.caps, oc.caps);
-        const go = oc.go as Record<string, unknown> | undefined;
-        if (go) {
-          cfg.opencode.go.workspaceId = strOrNull(go.workspaceId) ?? cfg.opencode.go.workspaceId;
-          cfg.opencode.go.authCookie = strOrNull(go.authCookie) ?? cfg.opencode.go.authCookie;
-        }
-      }
 
       const or = parsed.openrouter as Record<string, unknown> | undefined;
       if (or) cfg.openrouter.apiKey = strOrNull(or.apiKey) ?? cfg.openrouter.apiKey;
@@ -243,11 +189,6 @@ export async function loadConfig(): Promise<Config> {
   else if (process.env.GLM_API_KEY?.trim()) cfg.zai.apiKey = process.env.GLM_API_KEY.trim();
   if (process.env.GROK_CLI_OAUTH_TOKEN?.trim()) cfg.grok.oauthToken = process.env.GROK_CLI_OAUTH_TOKEN.trim();
   if (process.env.CLAUDE_ACCESS_TOKEN?.trim()) cfg.claude.accessToken = process.env.CLAUDE_ACCESS_TOKEN.trim();
-
-  for (const key of Object.keys(cfg.opencode.caps) as (keyof OpenCodeCaps)[]) {
-    const v = cfg.opencode.caps[key];
-    if (v !== null && !(typeof v === "number" && v > 0)) cfg.opencode.caps[key] = null;
-  }
 
   if (process.env.TUW_LAN_TOKEN?.trim()) cfg.server.lanToken = process.env.TUW_LAN_TOKEN.trim();
 

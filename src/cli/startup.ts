@@ -6,10 +6,11 @@
  *   node --import tsx src/cli/startup.ts status
  *
  * - On darwin it uses src/login-launch.ts to manage a per-user LaunchAgent.
- * - On win32 `install` delegates to the existing PowerShell `-InstallStartup`
- *   path so Windows behavior is unchanged. `remove` reports that the
- *   Startup shortcut is unmanaged by this command (it does not silently
- *   delete it).
+ * - On win32 `install` runs the checkout's electron.exe with `--install-startup`
+ *   (Electron writes a Startup shortcut that targets electron.exe directly, so
+ *   no cmd or PowerShell window opens at logon), then launches the widget.
+ *   `remove` reports that the Startup shortcut is unmanaged by this command
+ *   (it does not silently delete it).
  *
  * No provider config, credentials, cookies, or secrets are read or embedded.
  */
@@ -77,21 +78,22 @@ function realFs(): LoginLaunchSeams["fs"] {
   };
 }
 
-function runPowerShellInstallStartup(spawnFn: SpawnFn = realSpawn as SpawnFn): Promise<void> {
+function runToExit(spawnFn: SpawnFn, cmd: string, args: string[], what: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const checkout = checkoutRoot();
-    const ps1 = path.join(checkout, "scripts", "start-widget.ps1");
-    const child = spawnFn(
-      "powershell",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, "-InstallStartup"],
-      { stdio: "inherit" },
-    );
+    const child = spawnFn(cmd, args, { stdio: "inherit" });
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`PowerShell -InstallStartup exited with code ${code}`));
+      else reject(new Error(`${what} exited with code ${code}`));
     });
   });
+}
+
+async function runWin32InstallStartup(spawnFn: SpawnFn = realSpawn as SpawnFn): Promise<void> {
+  const checkout = checkoutRoot();
+  const electron = path.join(checkout, "node_modules", "electron", "dist", "electron.exe");
+  await runToExit(spawnFn, electron, [checkout, "--install-startup"], "Electron --install-startup");
+  await runToExit(spawnFn, process.execPath, [path.join(checkout, "scripts", "start-widget.cjs")], "Widget launch");
 }
 
 /** Testable dispatch. */
@@ -104,7 +106,7 @@ export async function dispatch(
 ): Promise<void> {
   if (platform === "win32") {
     if (command === "install") {
-      await runPowerShellInstallStartup(spawnFn);
+      await runWin32InstallStartup(spawnFn);
       return;
     }
     if (command === "remove") {
@@ -165,4 +167,4 @@ if (invokedDirectly) {
   });
 }
 
-export { main, parseCommand, runPowerShellInstallStartup, defaultSeams };
+export { main, parseCommand, runWin32InstallStartup, defaultSeams };

@@ -26,7 +26,6 @@ import {
   applySecret,
   defaultShell,
   ensureClaudeCredentials,
-  ensureOpencodeStub,
   loadExisting,
   readProviderFlags,
   secretDetectNote,
@@ -77,7 +76,6 @@ async function runDefaults(enableAll: boolean): Promise<void> {
     providers,
     server: (existing.server as object) ?? defaultShell(),
   };
-  ensureOpencodeStub(merged);
   writeConfig(merged);
   // eslint-disable-next-line no-console
   console.log(formatDefaultsLog(enableAll, providers, usedDefaultsFallback(enableAll, detected)));
@@ -130,7 +128,6 @@ async function runInteractive(): Promise<void> {
     providers,
     server: (existing.server as object) ?? defaultShell(),
   };
-  ensureOpencodeStub(merged);
   writeConfig(merged);
 }
 

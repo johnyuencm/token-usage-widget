@@ -175,6 +175,13 @@ export function resolveCursorStateDbPath(options: CursorPathOptions = {}): strin
 }
 
 async function sqliteGet(dbPath: string, sql: string): Promise<string> {
+  // Read in place first. state.vscdb can be ~1 GB; a synchronous copy blocks the
+  // server for seconds (missed health checks) and looks like credential theft to AV.
+  try {
+    return await sqliteScalar(dbPath, sql);
+  } catch {
+    // Locked by Cursor: fall back to reading a private copy.
+  }
   const tmp = path.join(os.tmpdir(), `tuw-cursor-${randomUUID()}.vscdb`);
   try {
     copySqliteSidecars(dbPath, tmp);

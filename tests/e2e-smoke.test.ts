@@ -57,21 +57,14 @@ test("e2e fixture: dashboard + widget assets + usage shape", async () => {
     assert.equal(usageRes.status, 200);
     const usage = await usageRes.json();
     assert.equal(usage.fixture, true);
-    assert.equal(usage.providers.length, 8);
+    assert.equal(usage.providers.length, 7);
 
     const openai = usage.providers.find((p: { provider: string }) => p.provider === "openai");
-    const opencode = usage.providers.find((p: { provider: string }) => p.provider === "opencode");
     const cursor = usage.providers.find((p: { provider: string }) => p.provider === "cursor");
     const openrouter = usage.providers.find((p: { provider: string }) => p.provider === "openrouter");
-    assert.ok(openai && opencode && cursor && openrouter);
+    assert.ok(openai && cursor && openrouter);
     assert.ok(openrouter.balance);
     assert.equal(openrouter.balance.remaining, 12.34);
-
-    // OpenCode Go-shaped fixture (rolling/weekly/monthly)
-    assert.equal(opencode.label, "OpenCode Go");
-    assert.equal(opencode.windows.five_hour.usedPercent, 0);
-    assert.equal(opencode.windows.week.usedPercent, 100);
-    assert.equal(opencode.windows.month.usedPercent, 50);
 
     // Cursor billing breakdown
     assert.ok(cursor.billing);
@@ -92,7 +85,7 @@ test("e2e fixture: dashboard + widget assets + usage shape", async () => {
     assert.doesNotMatch(widgetJs, /meter-fill/);
 
     // Fixture windows expose resetsAtIso for dashboard / tooltips
-    assert.ok(opencode.windows.five_hour.resetsAtIso);
+    assert.ok(openai.windows.week.resetsAtIso);
     assert.ok(cursor.billing.resetsAtIso);
   } finally {
     proc.kill();

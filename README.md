@@ -60,7 +60,7 @@ tuw start
 | ------- | ------------ |
 | `tuw` / `tuw widget` | Start the corner widget |
 | `tuw setup` | Interactive provider setup |
-| `tuw setup --defaults` | Enable detected local agents (Codex, Cursor, Claude, OpenCode) |
+| `tuw setup --defaults` | Enable detected local agents (Codex, Cursor, Claude) |
 | `tuw enable <provider>` | Enable one provider (secret prompt if needed) |
 | `tuw disable <provider>` | Disable one provider |
 | `tuw providers` | List provider on/off flags |
@@ -71,7 +71,7 @@ tuw start
 
 Config lives under `%APPDATA%/token-usage-widget/config.json` (Windows) or `~/.config/token-usage-widget/config.json` (macOS/Linux). Override with `TOKEN_USAGE_WIDGET_CONFIG`. A one-time migrate copies a checkout `./config.json` into that location when missing.
 
-Already logged into Codex, Cursor, Claude Code, or OpenCode on this machine? `tuw setup --defaults` detects those agents and enables them.
+Already logged into Codex, Cursor, or Claude Code on this machine? `tuw setup --defaults` detects those agents and enables them.
 
 ### From source (contributors)
 
@@ -113,7 +113,6 @@ tuw --help
 | ---------------- | ---------------------------------------------- | --------------------------------- |
 | **OpenAI Codex** | Logged-in Codex CLI                            | 5h / week / month **remaining** % |
 | **Cursor**       | Desktop login or `CURSOR_TOKEN`                | Total / first-party / API %       |
-| **OpenCode Go**  | Browser `auth` cookie (usage API not live yet) | Rolling / week / month used %     |
 | **Claude**       | Claude Code OAuth / `CLAUDE_ACCESS_TOKEN`      | 5h / week used %                  |
 | **OpenRouter**   | API key                                        | Prepaid **USD** balance           |
 | **Kimi Code**    | API key or local credentials                   | 5h / week used %                  |
@@ -127,29 +126,24 @@ tuw --help
 | Command                  | What it does                                     |
 | ------------------------ | ------------------------------------------------ |
 | `tuw setup` / `npm run setup` | Interactive: enable providers + optional secrets |
-| `tuw setup --defaults` / `npm run setup:defaults` | Enable **detected local agents** (Codex / Cursor / Claude / OpenCode) |
+| `tuw setup --defaults` / `npm run setup:defaults` | Enable **detected local agents** (Codex / Cursor / Claude) |
 | `tuw enable <id>` / `tuw disable <id>` | Flip one provider without full setup; refreshes widget |
 | `tuw providers`          | List current on/off flags                        |
 | `npm run setup:all`      | Enable all provider flags (no secret prompts)    |
 
 Or copy [`config.example.json`](./config.example.json) into your user config path (see Quick start).
 
-Env vars override file secrets when set (`OPENROUTER_API_KEY`, `CLAUDE_ACCESS_TOKEN`, `OPENCODE_GO_AUTH_COOKIE`, …).
+Env vars override file secrets when set (`OPENROUTER_API_KEY`, `CLAUDE_ACCESS_TOKEN`, …).
 
 Cold start: every provider is **off** until setup (or you edit `providers` in config). Disabled providers are never polled.
 
-### OpenCode Go note
-
-Terminal API keys are tried against `GET /zen/go/v1/usage`, but that endpoint is **not live yet**. Live Go meters need a browser session cookie via setup / env / config. Helper: `node --import tsx scripts/save-opencode-cookie.ts`.
-
 ### Provider discovery on macOS
 
-The Cursor and OpenCode adapters discover standard macOS locations when explicit inputs are absent. Explicit inputs always take priority over discovered defaults.
+The Cursor adapter discovers standard macOS locations when explicit inputs are absent. Explicit inputs always take priority over discovered defaults.
 
 - **Cursor** state database defaults to `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` on macOS and `%APPDATA%/Cursor/User/globalStorage/state.vscdb` on Windows. `CURSOR_TOKEN` / `CURSOR_STATE_DB` overrides remain highest priority.
-- **OpenCode Go** Firefox profile root defaults to `~/Library/Application Support/Firefox/Profiles` on macOS. Cookie / workspace resolution order is unchanged from Windows.
-- **Honest unavailable:** missing credentials stay `unavailable`/error — no synthetic live usage. `OPENCODE_ALLOW_LOCAL_ESTIMATE=1` is the only opt-in estimate path.
-- Safari, Chrome, and Arc cookie extraction is **not** supported.
+- **Honest unavailable:** missing credentials stay `unavailable`/error — no synthetic live usage.
+- The widget reads no browser cookies.
 
 ## Corner widget
 
@@ -169,7 +163,7 @@ If the configured `server.port` is already taken by an unrelated listener or a f
 
 ### Windows
 
-`npm run widget:startup` installs a Windows Startup shortcut and launches. Native window close hides the widget (tray restore); custom × and menu Quit exit.
+`npm run widget:startup` installs a Windows Startup shortcut and launches. The shortcut targets `electron.exe` directly, so no console or PowerShell window opens at logon. Native window close hides the widget (tray restore); custom × and menu Quit exit.
 
 ### macOS
 
@@ -201,7 +195,7 @@ Only **enabled** providers appear. Cursor may include `billing`; OpenRouter / Gr
 See [`config.example.json`](./config.example.json):
 
 - `providers.<id>` — `true` to poll and show
-- Provider secrets under `opencode` / `openrouter` / `kimi` / `zai` / `grok` / `claude`
+- Provider secrets under `openrouter` / `kimi` / `zai` / `grok` / `claude`
 - `server.host` / `server.port` (`PORT` env overrides)
 - `server.lanToken` — API token, only used when `server.host` is not loopback
 
@@ -276,11 +270,9 @@ version so a broken update does not ship into your session.
 
 ## Limitations
 
-- **OpenCode Go** — no official usage API yet (cookie scrape)
 - **Claude / Kimi / Z.AI / Grok** — community / undocumented endpoints; shapes can change
 - **macOS real-hardware behavior is unverified** — CI covers automated paths; interactive Mac observations are skipped (see [evidence index](docs/macos-widget/evidence-index.md))
 - **No native installer** — distributed on [npm](https://www.npmjs.com/package/token-usage-widget) (`tuw`); no DMG/EXE signing or notarization
-- **No Safari/Chrome/Arc cookie extraction** — Firefox only for OpenCode Go discovery
 - **No Linux widget support**
 - Not a hosted SaaS — you run it locally
 

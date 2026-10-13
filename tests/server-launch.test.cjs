@@ -53,6 +53,8 @@ async function loadMainHarness(
     pointerDisplay = { workArea: { x: 1920, y: 24, width: 1440, height: 876 } },
     userDataDir,
     dockTiming = null,
+    argv = [],
+    health = () => ({ ok: true, fixture: false }),
   } = {},
 ) {
   const mainPath = require.resolve("../desktop/main.cjs");
@@ -77,6 +79,8 @@ async function loadMainHarness(
     return "C:\\tmp";
   };
   app.setAppUserModelId = () => {};
+  app.exitCodes = [];
+  app.exit = (code) => app.exitCodes.push(code);
 
   const ipcHandlers = new Map();
   const windows = [];
@@ -228,10 +232,10 @@ async function loadMainHarness(
     DEFAULT_HOST: "127.0.0.1",
     DEFAULT_PORT: 4321,
     SERVER_LOG: "/tmp/server.log",
-    ensureUsageServer: async () => serverResult,
+    ensureUsageServer: async () => (typeof serverResult === "function" ? serverResult() : serverResult),
     fetchHealth: async (host, port) => {
       healthCalls.push({ host, port });
-      return { ok: true, fixture: false };
+      return health(host, port);
     },
   };
 
@@ -250,7 +254,7 @@ async function loadMainHarness(
     delete require.cache[mainPath];
   }
   assert.equal(typeof mainModule.runWidgetMain, "function");
-  mainModule.runWidgetMain({ electron, serverLaunch: launchModule, platform, dockTiming });
+  mainModule.runWidgetMain({ electron, serverLaunch: launchModule, platform, dockTiming, argv });
   await new Promise((resolve) => setImmediate(resolve));
 
   return {
@@ -916,7 +920,9 @@ test("Win32 main preserves tray, primary placement, Spaces, and native close-to-
       "Token Usage Widget.lnk",
     ),
   );
-  assert.match(harness.shortcutWrites[0].opts.target, /start-widget\.cmd$/);
+  // Target electron.exe directly: no cmd or PowerShell window at launch or logon.
+  assert.equal(harness.shortcutWrites[0].opts.target, process.execPath);
+  assert.match(harness.shortcutWrites[0].opts.args, /^".+"$/);
   assert.match(harness.shortcutWrites[0].opts.icon, /icon\.ico$/);
   assert.equal(harness.shortcutWrites[0].opts.appUserModelId, "com.token-usage.widget");
 
@@ -976,6 +982,45 @@ test("Win32 main restores last size and top-left position instead of default cor
     assert.equal(lastBounds.width, 240);
     assert.equal(lastBounds.height, 140);
   }
+});
+
+test("--install-startup writes a Startup shortcut to electron.exe and exits without a window", async () => {
+  const harness = await loadMainHarness(idleWin32Server(), { platform: "win32", argv: ["--install-startup"] });
+  assert.deepEqual(harness.app.exitCodes, [0]);
+  assert.equal(harness.windows.length, 0);
+  assert.equal(harness.shortcutWrites.length, 1);
+  assert.equal(
+    harness.shortcutWrites[0].path,
+    path.join("C:\\Users\\test\\AppData\\Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Token Usage Widget.lnk"),
+  );
+  assert.equal(harness.shortcutWrites[0].opts.target, process.execPath);
+  assert.doesNotMatch(JSON.stringify(harness.shortcutWrites[0].opts), /powershell|start-widget\.cmd/i);
+});
+
+test("a revive that starts a new server stops the old owned one (no orphan server)", async () => {
+  const owned = (proc, port) => ({
+    proc,
+    nodeBin: "C:\\nodejs\\node.exe",
+    logPath: "C:\\temp\\server.log",
+    reused: false,
+    owned: true,
+    endpoint: { host: "127.0.0.1", port, baseUrl: `http://127.0.0.1:${port}` },
+  });
+  const first = createFakeChild();
+  const second = createFakeChild();
+  const results = [owned(first, 4321), owned(second, 61567)];
+  let healthy = true;
+  const harness = await loadMainHarness(() => results.shift(), {
+    platform: "win32",
+    health: () => (healthy ? { ok: true, fixture: false } : null),
+  });
+  healthy = false; // one missed health check while the first server is busy
+  await harness.ipcHandlers.get("widget:ensure-server")();
+  assert.equal(results.length, 0, "revive started the second server");
+  assert.equal(first.killCalls, 1, "old owned server is stopped");
+  assert.equal(second.killCalls, 0);
+  harness.app.quit();
+  assert.equal(second.killCalls, 1, "quit stops the current server");
 });
 
 function idleWin32Server() {
@@ -1225,7 +1270,7 @@ test("ensureUsageServer starts fixture server with real node (not electron)", as
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.fixture, true);
-    assert.equal(body.providers.length, 8);
+    assert.equal(body.providers.length, 7);
     const ids = body.providers.map((p) => p.provider).sort();
     assert.deepEqual(ids, [
       "claude",
@@ -1233,7 +1278,6 @@ test("ensureUsageServer starts fixture server with real node (not electron)", as
       "grok",
       "kimi",
       "openai",
-      "opencode",
       "openrouter",
       "zai",
     ]);

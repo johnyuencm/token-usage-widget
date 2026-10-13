@@ -42,37 +42,6 @@ function openaiFixture(): ProviderUsage {
   };
 }
 
-function opencodeFixture(): ProviderUsage {
-  const now = Date.now();
-  // Match OpenCode Go dashboard meters (rolling / weekly / monthly).
-  const windows: Record<WindowId, WindowUsage> = {
-    five_hour: {
-      usedPercent: 0,
-      remainingPercent: 100,
-      resetsAtIso: new Date(now + 5 * 3600 * 1000).toISOString(),
-      status: "ok",
-    },
-    week: {
-      usedPercent: 100,
-      remainingPercent: 0,
-      resetsAtIso: new Date(now + (15 * 3600 + 53 * 60) * 1000).toISOString(),
-      status: "ok",
-    },
-    month: {
-      usedPercent: 50,
-      remainingPercent: 50,
-      resetsAtIso: new Date(now + (27 * 24 * 3600 + 1 * 3600) * 1000).toISOString(),
-      status: "ok",
-    },
-  };
-  return {
-    provider: "opencode",
-    label: "OpenCode Go",
-    windows,
-    fetchedAt: new Date().toISOString(),
-  };
-}
-
 function cursorFixture(): ProviderUsage {
   const cycleEndMs = Date.now() + 12 * 24 * 3600 * 1000;
   const windows: Record<WindowId, WindowUsage> = {
@@ -185,7 +154,6 @@ export function buildFixtureResponse(
 ): UsageResponse {
   const all: ProviderUsage[] = [
     openaiFixture(),
-    opencodeFixture(),
     cursorFixture(),
     claudeFixture(),
     openrouterFixture(),

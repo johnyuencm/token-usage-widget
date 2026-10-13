@@ -257,7 +257,7 @@ test("secretDetectNote is honest when nothing is detected", () => {
 test("ensureClaudeCredentials runs auth login then succeeds when detect finds token", () => {
   let loginCalls = 0;
   ensureClaudeCredentials(
-    { providers: { ...Object.fromEntries(["openai", "opencode", "cursor", "claude", "openrouter", "kimi", "zai", "grok"].map((id) => [id, id === "claude"])) } },
+    { providers: { ...Object.fromEntries(["openai", "cursor", "claude", "openrouter", "kimi", "zai", "grok"].map((id) => [id, id === "claude"])) } },
     {
       resolveToken: () => null,
       authLogin: () => {
@@ -274,7 +274,7 @@ test("ensureClaudeCredentials throws actionable error when still missing after l
   assert.throws(
     () =>
       ensureClaudeCredentials(
-        { providers: { openai: false, opencode: false, cursor: false, claude: true, openrouter: false, kimi: false, zai: false, grok: false } },
+        { providers: { openai: false, cursor: false, claude: true, openrouter: false, kimi: false, zai: false, grok: false } },
         {
           resolveToken: () => null,
           authLogin: () => ({ status: 0 }),
@@ -294,7 +294,6 @@ test("setup calls ensureClaude then refresh when Claude enabled without token", 
       loadExisting: () => ({
         providers: {
           openai: false,
-          opencode: false,
           cursor: false,
           claude: true,
           openrouter: false,
@@ -321,7 +320,6 @@ test("setup ensureClaude failure propagates and skips refresh", async () => {
       loadExisting: () => ({
         providers: {
           openai: false,
-          opencode: false,
           cursor: false,
           claude: true,
           openrouter: false,
@@ -346,7 +344,6 @@ function providerDeps(overrides: Partial<ProviderCliDeps> = {}): ProviderCliDeps
   let store: Record<string, unknown> = {
     providers: {
       openai: true,
-      opencode: false,
       cursor: true,
       claude: false,
       openrouter: false,
@@ -377,7 +374,6 @@ test("enable claude writes flag, runs ensureClaude, refreshes", async () => {
   let store: Record<string, unknown> = {
     providers: {
       openai: true,
-      opencode: false,
       cursor: true,
       claude: false,
       openrouter: false,
@@ -403,7 +399,6 @@ test("disable claude writes false and refreshes without auth", async () => {
   let store: Record<string, unknown> = {
     providers: {
       openai: true,
-      opencode: false,
       cursor: true,
       claude: true,
       openrouter: false,
@@ -434,7 +429,6 @@ test("runProviderCommand providers lists flags", () => {
     loadExisting: () => ({
       providers: {
         openai: true,
-        opencode: false,
         cursor: true,
         claude: false,
         openrouter: false,
@@ -453,7 +447,6 @@ test("runProviderCommand enable routes to enableProvider", async () => {
   let store: Record<string, unknown> = {
     providers: {
       openai: false,
-      opencode: false,
       cursor: false,
       claude: false,
       openrouter: false,
@@ -478,7 +471,6 @@ test("setProviderEnabled preserves other flags", () => {
     {
       providers: {
         openai: true,
-        opencode: false,
         cursor: true,
         claude: false,
         openrouter: false,

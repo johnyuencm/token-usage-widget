@@ -26,31 +26,6 @@ test("cursor compact line matches dense format", () => {
   assert.equal(line, "cursor: total 23% first party 13% API 99%");
 });
 
-test("opencode compact includes rolling/week/month when ok", () => {
-  const line = providerLine({
-    provider: "opencode",
-    windows: {
-      five_hour: { status: "ok", usedPercent: 0 },
-      week: { status: "ok", usedPercent: 100 },
-      month: { status: "ok", usedPercent: 50 },
-    },
-  });
-  assert.equal(line, "opencode: rolling 0%, week 100%, month 50%");
-});
-
-test("opencode missing-auth shows NA when nothing is ok", () => {
-  const line = providerLine({
-    provider: "opencode",
-    error: "Set auth cookie (OPENCODE_GO_AUTH_COOKIE) to load live OpenCode Go meters.",
-    windows: {
-      five_hour: { status: "unavailable", usedPercent: null },
-      week: { status: "unavailable", usedPercent: null },
-      month: { status: "unavailable", usedPercent: null },
-    },
-  });
-  assert.equal(line, "opencode: error");
-});
-
 test("openrouter compact shows dollar balance remaining", () => {
   const line = providerLine({
     provider: "openrouter",

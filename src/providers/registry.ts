@@ -1,7 +1,6 @@
 import type { Config } from "../config.js";
 import type { ProviderId, ProviderUsage } from "../types.js";
 import { fetchOpenAIUsage } from "../adapters/openai.js";
-import { fetchOpenCodeUsage } from "../adapters/opencode.js";
 import { fetchCursorUsage } from "../adapters/cursor.js";
 import { fetchClaudeUsage } from "../adapters/claude.js";
 import { fetchOpenRouterUsage } from "../adapters/openrouter.js";
@@ -24,12 +23,6 @@ export const PROVIDER_META: ProviderMeta[] = [
     label: "OpenAI Codex",
     blurb: "Codex CLI session rate limits (5h / week / month).",
     detectHint: "Uses logged-in `codex` / codex-status-mcp (no key in config).",
-  },
-  {
-    id: "opencode",
-    label: "OpenCode Go",
-    blurb: "Go plan rolling / weekly / monthly (website session until API ships).",
-    detectHint: "Optional auth cookie; workspace auto-detected from logs.",
   },
   {
     id: "cursor",
@@ -73,7 +66,6 @@ type Fetcher = (cfg: Config) => Promise<ProviderUsage>;
 
 const FETCHERS: Record<ProviderId, Fetcher> = {
   openai: async () => fetchOpenAIUsage(),
-  opencode: (cfg) => fetchOpenCodeUsage(cfg),
   cursor: async () => fetchCursorUsage(),
   claude: (cfg) => fetchClaudeUsage(cfg),
   openrouter: (cfg) => fetchOpenRouterUsage(cfg),

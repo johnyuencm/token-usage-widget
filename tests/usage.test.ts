@@ -3,12 +3,10 @@ import assert from "node:assert/strict";
 import { buildFixtureResponse } from "../src/fixtures.js";
 import { fetchOpenAIUsage, formatCodexStatusError, __test as openaiTest } from "../src/adapters/openai.js";
 import { CodexStatusError } from "codex-status-mcp";
-import { __test as opencodeTest } from "../src/adapters/opencode.js";
 import { __test as cursorTest } from "../src/adapters/cursor.js";
 import type { WindowId, WindowUsage } from "../src/types.js";
 
 const { classifyDuration, mapWindows, windowFromRateLimit, pickRateLimits } = openaiTest;
-const { extractTokens, toMs, tokenWindow } = opencodeTest;
 const { mapCursorPeriod, parseCursorTimestamp, buildCursorBilling, formatPlanLabel } = cursorTest;
 
 const WINDOW_IDS: WindowId[] = ["five_hour", "week", "month"];
@@ -159,7 +157,7 @@ test("pickRateLimits falls back to top-level rateLimits when no codex key", () =
 test("fixture response shape: eight providers, three windows each, fixture flag true", () => {
   const resp = buildFixtureResponse();
   assert.equal(resp.fixture, true);
-  assert.equal(resp.providers.length, 8);
+  assert.equal(resp.providers.length, 7);
   const ids = resp.providers.map((p) => p.provider).sort();
   assert.deepEqual(ids, [
     "claude",
@@ -167,7 +165,6 @@ test("fixture response shape: eight providers, three windows each, fixture flag 
     "grok",
     "kimi",
     "openai",
-    "opencode",
     "openrouter",
     "zai",
   ]);
@@ -184,7 +181,6 @@ test("fixture response shape: eight providers, three windows each, fixture flag 
 test("fixture response respects enabled provider flags", () => {
   const resp = buildFixtureResponse({
     openai: true,
-    opencode: false,
     cursor: true,
     claude: false,
     openrouter: false,
@@ -208,68 +204,6 @@ test("fixture OpenAI weekly window is ok with remainingPercent = 100 - used", ()
   assert.equal(openai.windows.week.status, "ok");
   const w = openai.windows.week;
   assert.equal(w.remainingPercent, Math.max(0, 100 - w.usedPercent!));
-});
-
-test("fixture OpenCode windows report usedTokens and remainingPercent when capped", () => {
-  const resp = buildFixtureResponse();
-  const oc = resp.providers.find((p) => p.provider === "opencode");
-  if (!oc) throw new Error("opencode provider missing from fixture");
-  assert.equal(oc.label, "OpenCode Go");
-  assert.equal(oc.windows.five_hour.usedPercent, 0);
-  assert.equal(oc.windows.week.usedPercent, 100);
-  assert.equal(oc.windows.month.usedPercent, 50);
-  assert.equal(oc.windows.week.remainingPercent, 0);
-  assert.equal(oc.windows.month.remainingPercent, 50);
-  assert.ok(oc.windows.five_hour.resetsAtIso);
-});
-
-test("parseGoDashboardHtml extracts rolling/weekly/monthly", () => {
-  const { parseGoDashboardHtml, mapGoToWindows } = opencodeTest;
-  const html =
-    "<script>rollingUsage:$R[10]={resetInSec:18000,usagePercent:0}weeklyUsage:$R[11]={resetInSec:57180,usagePercent:100}monthlyUsage:$R[12]={resetInSec:2336400,usagePercent:50}</script>";
-  const snap = parseGoDashboardHtml(html);
-  assert.ok(snap);
-  assert.equal(snap!.rolling?.usagePercent, 0);
-  assert.equal(snap!.weekly?.usagePercent, 100);
-  assert.equal(snap!.monthly?.usagePercent, 50);
-  const windows = mapGoToWindows(snap!);
-  assert.equal(windows.five_hour.usedPercent, 0);
-  assert.equal(windows.week.usedPercent, 100);
-  assert.equal(windows.month.usedPercent, 50);
-  assert.equal(windows.week.remainingPercent, 0);
-});
-
-test("extractTokens prefers explicit total, else sums nested parts", () => {
-  assert.equal(extractTokens('{"tokens":{"total":1234}}')?.total, 1234);
-  const summed = extractTokens('{"tokens":{"input":100,"output":20,"reasoning":5,"cache":{"read":10,"write":3}}}');
-  assert.equal(summed?.total, 138);
-  assert.equal(extractTokens('{"tokens":{"input":1}}')?.total, 1);
-  assert.equal(extractTokens('not json'), null);
-  assert.equal(extractTokens('{"nope":1}'), null);
-});
-
-test("toMs auto-detects seconds vs milliseconds", () => {
-  const sec = 1780000000; // seconds, ~2026
-  const ms = 1780000000_000; // ms, ~2026
-  assert.ok(Math.abs(toMs(sec) - toMs(ms)) < 1);
-  assert.equal(toMs(sec), sec * 1000);
-  assert.equal(toMs(ms), ms);
-});
-
-test("OpenCode tokenWindow: remainingPercent null when no cap, usedTokens still shown", () => {
-  const w = tokenWindow(5_000_000, null);
-  assert.equal(w.status, "ok");
-  assert.equal(w.usedPercent, null);
-  assert.equal(w.remainingPercent, null);
-  assert.equal(w.usedTokens, 5_000_000);
-});
-
-test("OpenCode tokenWindow: clamps to 100 and computes remaining when capped", () => {
-  const w = tokenWindow(2_000_000, 1_000_000);
-  assert.equal(w.status, "ok");
-  assert.equal(w.usedPercent, 100);
-  assert.equal(w.remainingPercent, 0);
-  assert.equal(w.usedTokens, 2_000_000);
 });
 
 test("mapCursorPeriod maps totalPercentUsed to month; 5h/week unavailable", () => {

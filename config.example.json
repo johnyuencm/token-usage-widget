@@ -1,25 +1,12 @@
 {
   "providers": {
     "openai": true,
-    "opencode": false,
     "cursor": true,
     "claude": false,
     "openrouter": false,
     "kimi": false,
     "zai": false,
     "grok": false
-  },
-  "opencode": {
-    "dbPath": null,
-    "caps": {
-      "five_hour": null,
-      "week": null,
-      "month": null
-    },
-    "go": {
-      "workspaceId": null,
-      "authCookie": null
-    }
   },
   "openrouter": {
     "apiKey": null

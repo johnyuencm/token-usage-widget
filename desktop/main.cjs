@@ -22,6 +22,8 @@ const {
 const { createWidgetDock } = require("./widget-dock.cjs");
 
 const ICON_DIR = path.join(__dirname, "icons");
+const SHORTCUT_NAME = "Token Usage Widget.lnk";
+
 const LEGACY_TRAY_ICON =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAALElEQVQ4T2NkYGD4z0ABYBzVMKoBBgYGRvL8P6oBMjIy/xkZGBhHNWBUA0Y1AABeJQMR9ZyeRgAAAABJRU5ErkJggg==";
 
@@ -98,6 +100,16 @@ function runWidgetMain({
 
   function bindOwnedServer(proc) {
     if (!proc) return;
+    // A revive after one missed health check can start a new server on a fallback
+    // port while the old one still runs. Stop the old owned one so it never orphans.
+    const previous = serverProc;
+    if (ownsServer && previous && previous !== proc && !previous.killed) {
+      try {
+        previous.kill();
+      } catch {
+        // ignore
+      }
+    }
     serverProc = proc;
     ownsServer = true;
     proc.once("exit", (code, signal) => {
@@ -309,29 +321,26 @@ function runWidgetMain({
     return undefined;
   }
 
-  function ensureStartMenuShortcut() {
-    if (platform !== "win32") return;
-    if (typeof shell.writeShortcutLink !== "function") return;
-    let appData;
+  function startMenuProgramsDir() {
     try {
-      appData = typeof app.getPath === "function" ? app.getPath("appData") : null;
+      const appData = typeof app.getPath === "function" ? app.getPath("appData") : null;
+      return appData ? path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs") : null;
     } catch {
-      return;
+      return null;
     }
-    if (!appData) return;
-    const shortcutPath = path.join(
-      appData,
-      "Microsoft",
-      "Windows",
-      "Start Menu",
-      "Programs",
-      "Token Usage Widget.lnk",
-    );
-    const cmd = path.join(root, "scripts", "start-widget.cmd");
+  }
+
+  /**
+   * Point the shortcut straight at electron.exe. No cmd or PowerShell window opens at
+   * logon; hidden script launchers made antivirus behavior monitors flag the widget.
+   */
+  function writeWidgetShortcut(shortcutPath) {
+    if (typeof shell.writeShortcutLink !== "function") return false;
     const ico = iconPath("icon.ico");
     try {
-      shell.writeShortcutLink(shortcutPath, {
-        target: cmd,
+      return shell.writeShortcutLink(shortcutPath, {
+        target: process.execPath,
+        args: `"${root}"`,
         cwd: root,
         description: "Token Usage always-on-top corner widget",
         icon: fs.existsSync(ico) ? ico : undefined,
@@ -339,8 +348,19 @@ function runWidgetMain({
         appUserModelId: "com.token-usage.widget",
       });
     } catch {
-      // Best-effort; missing Start Menu entry must not block the widget.
+      return false;
     }
+  }
+
+  function ensureStartMenuShortcut() {
+    if (platform !== "win32") return;
+    const programs = startMenuProgramsDir();
+    if (!programs) return;
+    // Best-effort; a missing Start Menu entry must not block the widget.
+    writeWidgetShortcut(path.join(programs, SHORTCUT_NAME));
+    // Migrate an older Startup shortcut that still targets start-widget.cmd.
+    const startup = path.join(programs, "Startup", SHORTCUT_NAME);
+    if (fs.existsSync(startup)) writeWidgetShortcut(startup);
   }
 
   function trayIcon() {
@@ -665,6 +685,17 @@ function runWidgetMain({
   });
 
   ipcMain.handle("widget:quit", requestQuit);
+
+  if (argv.includes("--install-startup")) {
+    app.whenReady().then(() => {
+      const programs = platform === "win32" ? startMenuProgramsDir() : null;
+      const target = programs && path.join(programs, "Startup", SHORTCUT_NAME);
+      const ok = Boolean(target && writeWidgetShortcut(target));
+      console.log(ok ? `Startup shortcut installed: ${target}` : "Startup shortcut was not written.");
+      app.exit(ok ? 0 : 1);
+    });
+    return;
+  }
 
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {

@@ -1,6 +1,5 @@
 export type ProviderId =
   | "openai"
-  | "opencode"
   | "cursor"
   | "claude"
   | "openrouter"
@@ -65,7 +64,6 @@ export interface UsageResponse {
 
 export const ALL_PROVIDER_IDS: ProviderId[] = [
   "openai",
-  "opencode",
   "cursor",
   "claude",
   "openrouter",

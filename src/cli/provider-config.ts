@@ -23,7 +23,6 @@ export type SecretKind =
   | "zai"
   | "grok"
   | "claude"
-  | "opencode_cookie"
   | null;
 
 export interface SecretSpec {
@@ -105,12 +104,6 @@ export const SECRET_BY_PROVIDER: Partial<Record<ProviderId, SecretSpec>> = {
       return null;
     },
   },
-  opencode: {
-    kind: "opencode_cookie",
-    prompt: "OpenCode Go website auth cookie (optional until API ships)",
-    envNames: ["OPENCODE_GO_AUTH_COOKIE"],
-    detect: () => process.env.OPENCODE_GO_AUTH_COOKIE?.trim() || null,
-  },
 };
 
 export function loadExisting(): Record<string, unknown> {
@@ -153,10 +146,6 @@ export function applySecret(
     out.grok = { ...(out.grok as object), oauthToken: value };
   } else if (kind === "claude") {
     out.claude = { ...(out.claude as object), accessToken: value };
-  } else if (kind === "opencode_cookie") {
-    const oc = (out.opencode as Record<string, unknown>) ?? {};
-    const go = (oc.go as Record<string, unknown>) ?? {};
-    out.opencode = { ...oc, go: { ...go, authCookie: value } };
   }
 }
 
@@ -178,16 +167,6 @@ export function readProviderFlags(existing: Record<string, unknown>): ProviderFl
     if (typeof prev[id] === "boolean") providers[id] = prev[id]!;
   }
   return providers;
-}
-
-export function ensureOpencodeStub(merged: Record<string, unknown>): void {
-  if (!merged.opencode) {
-    merged.opencode = {
-      dbPath: null,
-      caps: { five_hour: null, week: null, month: null },
-      go: { workspaceId: null, authCookie: null },
-    };
-  }
 }
 
 export function resolveClaudeToken(cfg: Record<string, unknown>): string | null {
@@ -225,7 +204,6 @@ export function setProviderEnabled(
     providers,
     server: (existing.server as object) ?? defaultShell(),
   };
-  ensureOpencodeStub(merged);
   return merged;
 }
 

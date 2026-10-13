@@ -113,11 +113,9 @@
     const name =
       p.provider === "openai"
         ? "codex"
-        : p.provider === "opencode"
-          ? "opencode"
-          : p.provider === "cursor"
-            ? "cursor"
-            : String(p.provider || "provider").toLowerCase();
+        : p.provider === "cursor"
+          ? "cursor"
+          : String(p.provider || "provider").toLowerCase();
 
     if (p.error && p.provider !== "cursor") {
       // Prefer window/balance lines when present; only collapse when empty.
@@ -183,20 +181,12 @@
     }
 
     // Codex Analytics shows "% remaining" — match that number for openai.
-    // OpenCode Go meters are usage/% used.
     const mode = p.provider === "openai" ? "remaining" : "used";
-    const labels =
-      p.provider === "opencode"
-        ? [
-            ["rolling", "five_hour"],
-            ["week", "week"],
-            ["month", "month"],
-          ]
-        : [
-            ["5h", "five_hour"],
-            ["Week", "week"],
-            ["Month", "month"],
-          ];
+    const labels = [
+      ["5h", "five_hour"],
+      ["Week", "week"],
+      ["Month", "month"],
+    ];
 
     const bits = windowBits(labels, p, mode, nowMs);
     if (!bits.length) {

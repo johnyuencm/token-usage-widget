@@ -4,12 +4,6 @@ const WINDOW_META = {
   month: { label: "Monthly Window", short: "30d" },
 };
 
-const OPENCODE_WINDOW_META = {
-  five_hour: { label: "Rolling Usage", short: "5h" },
-  week: { label: "Weekly Usage", short: "7d" },
-  month: { label: "Monthly Usage", short: "30d" },
-};
-
 const DEFAULT_UI = {
   refreshIntervalSec: 60,
   pollIntervalSec: { claude: 300 },
@@ -109,8 +103,7 @@ function setRefreshInterval(sec) {
 }
 
 function renderWindow(parent, winId, win, providerId) {
-  const meta =
-    providerId === "opencode" ? OPENCODE_WINDOW_META[winId] : WINDOW_META[winId];
+  const meta = WINDOW_META[winId];
   const node = windowTemplate.content.cloneNode(true);
   const article = node.querySelector(".window");
   article.dataset.status = win.status;
@@ -125,7 +118,7 @@ function renderWindow(parent, winId, win, providerId) {
   fill.style.width = used !== null ? `${Math.min(100, Math.max(0, used))}%` : "0%";
   fill.dataset.tone = toneFor(used, win.status);
 
-  const pctFmt = providerId === "opencode" || providerId === "cursor" ? fmtPctWhole : fmtPct;
+  const pctFmt = providerId === "cursor" ? fmtPctWhole : fmtPct;
   node.querySelector(".stat-used").textContent =
     win.status === "ok" ? pctFmt(win.usedPercent) : "Unavailable";
   node.querySelector(".stat-remaining").textContent =
@@ -134,15 +127,10 @@ function renderWindow(parent, winId, win, providerId) {
       : win.status === "ok"
         ? "uncapped"
         : "Unavailable";
-  const tokensStat = node.querySelector(".stat--tokens");
-  if (providerId === "opencode" && (win.usedTokens === null || win.usedTokens === undefined)) {
-    tokensStat.hidden = true;
-  } else {
-    node.querySelector(".stat-tokens").textContent =
-      win.usedTokens !== null && win.usedTokens !== undefined
-        ? fmtTokens(win.usedTokens)
-        : "—";
-  }
+  node.querySelector(".stat-tokens").textContent =
+    win.usedTokens !== null && win.usedTokens !== undefined
+      ? fmtTokens(win.usedTokens)
+      : "—";
 
   parent.appendChild(node);
 }
