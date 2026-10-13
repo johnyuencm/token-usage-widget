@@ -10,10 +10,16 @@ const {
   resizeBottomRight,
   clampBoundsToWorkArea,
   restorePlacement,
+  nearestDockEdge,
+  dockedBounds,
+  lerpBounds,
+  boundsContainPoint,
+  hoverTargetBounds,
   MIN_WIDTH,
   MIN_HEIGHT,
   DEFAULT_WIDTH,
   DEFAULT_HEIGHT,
+  DOCK_PEEK_PX,
 } = require("../desktop/widget-bounds.cjs");
 
 test("loadBounds returns null when missing", () => {
@@ -90,6 +96,63 @@ test("restorePlacement falls back to bottom-right when position is missing", () 
     { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT },
   );
   assert.deepEqual(restored, cornerPlacement({ width: 240, height: 140 }, workArea, 16));
+});
+
+test("dockedBounds parks a bottom-right widget on the bottom edge", () => {
+  const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
+  const rest = cornerPlacement({ width: DEFAULT_WIDTH, height: 172 }, workArea, 16);
+  assert.equal(nearestDockEdge(rest, workArea), "bottom");
+  const parked = dockedBounds(rest, workArea);
+  assert.equal(parked.edge, "bottom");
+  assert.equal(parked.x, rest.x);
+  assert.equal(parked.y, workArea.height - DOCK_PEEK_PX);
+  assert.equal(parked.width, rest.width);
+  assert.equal(parked.height, rest.height);
+});
+
+test("dockedBounds parks toward the nearest side", () => {
+  const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
+  const left = dockedBounds({ x: 8, y: 400, width: 320, height: 172 }, workArea);
+  assert.equal(left.edge, "left");
+  assert.equal(left.x, DOCK_PEEK_PX - 320);
+  const right = dockedBounds({ x: 1500, y: 200, width: 320, height: 172 }, workArea);
+  assert.equal(right.edge, "right");
+  assert.equal(right.x, 1920 - DOCK_PEEK_PX);
+  const top = dockedBounds({ x: 400, y: 4, width: 320, height: 172 }, workArea);
+  assert.equal(top.edge, "top");
+  assert.equal(top.y, DOCK_PEEK_PX - 172);
+});
+
+test("lerpBounds reaches the parked point and the home point", () => {
+  const from = { x: 100, y: 200, width: 320, height: 172 };
+  const to = { x: 100, y: 900, width: 320, height: 172 };
+  assert.deepEqual(lerpBounds(from, to, 0), from);
+  assert.deepEqual(lerpBounds(from, to, 1), to);
+});
+
+test("hover target keeps the edge strip while the widget is open", () => {
+  const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
+  const rest = { x: 1584, y: 892, width: 320, height: 172 };
+  const parked = dockedBounds(rest, workArea);
+  const openTarget = hoverTargetBounds({
+    rest,
+    current: rest,
+    workArea,
+    hidden: false,
+    applying: false,
+  });
+  const edgePoint = { x: rest.x + 10, y: workArea.height - 2 };
+  assert.equal(boundsContainPoint(openTarget, edgePoint), true);
+  assert.equal(boundsContainPoint(rest, edgePoint), false);
+  const parkedTarget = hoverTargetBounds({
+    rest,
+    current: parked,
+    workArea,
+    hidden: true,
+    applying: false,
+  });
+  assert.equal(boundsContainPoint(parkedTarget, edgePoint), true);
+  assert.equal(boundsContainPoint(parkedTarget, { x: rest.x + 10, y: rest.y + 10 }), false);
 });
 
 test("clampBoundsToWorkArea pulls off-screen windows back into view", () => {
