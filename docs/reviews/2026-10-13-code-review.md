@@ -118,6 +118,7 @@ All 30 findings are fixed. Three agents fixed separate file sets in parallel. Ea
 
 ## Open items
 
+- npm publish of 2.0.0 is blocked: npm asks for web login (2FA) in a browser. The owner must run `npm publish` in the checkout. npm `latest` is still 1.2.5, so 1.2.6 was never published either. The git tag `v2.0.0` and the GitHub release are done.
 - Not in scope: GitHub Dependabot reports 67 alerts on `master` (25 high, 37 moderate, 5 low). Review them separately.
 - tsx fallback (no `dist/`): a restart stops only the tsx parent. `WIDGET_PARENT_PID` stops the child when Electron exits.
 - `artifacts/e2e-evidence.md` and `docs/macos-widget/*` still mention OpenCode as history.
