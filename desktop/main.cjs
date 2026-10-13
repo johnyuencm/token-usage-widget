@@ -13,9 +13,13 @@ const {
   resizeBottomRight,
   clampBoundsToWorkArea,
   restorePlacement,
+  boundsContainPoint,
+  hoverTargetBounds,
   MIN_WIDTH,
   MIN_HEIGHT,
+  DOCK_PEEK_PX,
 } = require("./widget-bounds.cjs");
+const { createWidgetDock } = require("./widget-dock.cjs");
 
 const ICON_DIR = path.join(__dirname, "icons");
 const LEGACY_TRAY_ICON =
@@ -27,6 +31,7 @@ function runWidgetMain({
   platform = process.platform,
   env = process.env,
   argv = process.argv,
+  dockTiming = null,
 } = {}) {
   const { app, BrowserWindow, Tray, Menu, nativeImage, screen, shell, ipcMain, dialog } = electron;
   const { fetchHealth, ensureUsageServer, DEFAULT_HOST, DEFAULT_PORT, SERVER_LOG } = serverLaunch;
@@ -64,6 +69,14 @@ function runWidgetMain({
   let userSized = false;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let persistTimer = null;
+  /** True while a dock slide owns setBounds. User moves must not save the strip. */
+  let applyingDock = false;
+  let dockEpoch = 0;
+  /** @type {ReturnType<typeof createWidgetDock> | null} */
+  let dock = null;
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let pointerPoll = null;
+  const pointerPollMs = dockTiming?.pollMs ?? 40;
 
   function widgetServerEnv() {
     const serverEnv = { ...env };
@@ -206,13 +219,13 @@ function runWidgetMain({
   }
 
   function persistWindowBounds() {
-    if (!win || applyingFit) return;
+    if (!win || applyingFit || applyingDock) return;
     if (typeof win.isDestroyed === "function" && win.isDestroyed()) return;
     if (typeof win.getBounds !== "function") return;
     const dir = userDataDir();
     if (!dir) return;
     try {
-      const b = win.getBounds();
+      const b = dock?.getRest() || win.getBounds();
       const payload = { x: b.x, y: b.y, width: b.width, height: b.height };
       if (userSized) payload.userSized = true;
       saveBounds(dir, payload);
@@ -247,7 +260,7 @@ function runWidgetMain({
     if (typeof win.getBounds !== "function") return { locked: false };
     const h = Number(contentHeight);
     if (!Number.isFinite(h) || h <= 0) return { locked: false };
-    const b = win.getBounds();
+    const b = dock?.getRest() || win.getBounds();
     // Wrapped rows at the 220px floor used to report a taller scroll height
     // and bounce a minimized widget larger. Fit may shrink; it may not grow.
     const fittedHeight = Math.min(b.height, Math.ceil(h));
@@ -259,12 +272,15 @@ function runWidgetMain({
             workAreaFor(b),
           );
     if (next.width === b.width && next.height === b.height && next.x === b.x && next.y === b.y) {
+      dock?.setRest(next);
       persistSize(next);
       return { locked: false };
     }
     applyingFit = true;
     try {
-      win.setBounds(next);
+      dock?.setRest(next);
+      if (dock?.isHidden()) dock.retarget();
+      else win.setBounds(next);
       persistSize(next);
     } finally {
       const release = setTimeout(() => {
@@ -354,15 +370,71 @@ function runWidgetMain({
   function reanchorWindow() {
     if (!win) return;
     if (platform === "darwin") {
-      win.setBounds(windowPlacement());
+      const placed = windowPlacement();
+      dock?.setRest(placed);
+      if (dock?.isHidden()) {
+        dock.retarget();
+        return;
+      }
+      win.setBounds(placed);
       return;
     }
     if (typeof win.getBounds !== "function") return;
-    const b = win.getBounds();
+    const b = dock?.getRest() || win.getBounds();
     const next = clampBoundsToWorkArea(b, workAreaFor(b));
+    dock?.setRest(next);
+    if (dock?.isHidden()) {
+      dock.retarget();
+      return;
+    }
     if (next.x !== b.x || next.y !== b.y || next.width !== b.width || next.height !== b.height) {
       win.setBounds(next);
     }
+  }
+
+  function readPointerInside() {
+    if (!win || !dock) return null;
+    if (typeof win.isDestroyed === "function" && win.isDestroyed()) return null;
+    if (typeof win.isVisible === "function" && !win.isVisible()) return null;
+    if (typeof screen.getCursorScreenPoint !== "function") return null;
+    let point;
+    try {
+      point = screen.getCursorScreenPoint();
+    } catch {
+      return null;
+    }
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    const current = win.getBounds();
+    const rest = dock.getRest();
+    const target = hoverTargetBounds({
+      rest,
+      current,
+      workArea: rest ? workAreaFor(rest) : null,
+      hidden: dock.isHidden(),
+      applying: dock.isApplying(),
+      peek: DOCK_PEEK_PX,
+    });
+    if (!target) return null;
+    return boundsContainPoint(target, point);
+  }
+
+  function syncPointer() {
+    const inside = readPointerInside();
+    if (inside === null) return;
+    dock?.notePointer(inside);
+  }
+
+  function startPointerPoll() {
+    if (pointerPoll || pointerPollMs <= 0) return;
+    pointerPoll = setInterval(syncPointer, pointerPollMs);
+    pointerPoll.unref?.();
+    syncPointer();
+  }
+
+  function stopPointerPoll() {
+    if (!pointerPoll) return;
+    clearInterval(pointerPoll);
+    pointerPoll = null;
   }
 
   function showWindow({ focus = false, inactive = false } = {}) {
@@ -371,9 +443,17 @@ function runWidgetMain({
     // Darwin keeps the menu-bar utility pinned to the pointer display corner.
     // Windows restores the last size/position and must not snap back to bottom-right.
     if (platform === "darwin") reanchorWindow();
+    dock?.reveal();
     if (inactive) win.showInactive();
     else win.show();
     if (focus) win.focus();
+    startPointerPoll();
+  }
+
+  function concealWindow() {
+    dock?.cancelPending();
+    persistWindowBounds();
+    win?.hide();
   }
 
   function requestQuit() {
@@ -415,24 +495,64 @@ function runWidgetMain({
     });
     win.loadURL(`${currentServerEndpoint().baseUrl}/widget.html`);
 
+    const timing = {};
+    if (dockTiming && Number.isFinite(dockTiming.hideDelayMs)) timing.hideDelayMs = dockTiming.hideDelayMs;
+    if (dockTiming && Number.isFinite(dockTiming.slideMs)) timing.slideMs = dockTiming.slideMs;
+    if (dockTiming && Number.isFinite(dockTiming.peek)) timing.peek = dockTiming.peek;
+    dock = createWidgetDock({
+      ...timing,
+      getBounds: () => win.getBounds(),
+      setBounds: (bounds) => {
+        if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return;
+        win.setBounds(bounds);
+      },
+      workAreaFor: (bounds) => workAreaFor(bounds),
+      onSlideStart: () => {
+        dockEpoch += 1;
+        applyingDock = true;
+      },
+      onSlideEnd: () => {
+        const epoch = dockEpoch;
+        const release = setTimeout(() => {
+          if (epoch !== dockEpoch) return;
+          applyingDock = false;
+        }, 0);
+        release.unref?.();
+      },
+    });
+    dock.setRest(win.getBounds());
+
     win.once("ready-to-show", () => {
       showWindow({ inactive: true });
     });
 
-    win.on("resize", () => {
-      if (applyingFit) return;
-      schedulePersistWindowBounds();
-    });
-    win.on("move", () => {
-      if (applyingFit) return;
-      schedulePersistWindowBounds();
-    });
-    win.on("moved", () => {
-      if (applyingFit) return;
-      schedulePersistWindowBounds();
-    });
+    const onUserGeometry = () => {
+      if (applyingFit || applyingDock || !dock || !win) return;
+      const b = win.getBounds();
+      if (dock.isHidden()) {
+        const rest = dock.getRest();
+        if (rest) dock.setRest({ ...rest, width: b.width, height: b.height });
+        dock.retarget();
+        schedulePersistWindowBounds();
+        return;
+      }
+      if (dock.noteUserBounds(b)) schedulePersistWindowBounds();
+    };
+    win.on("resize", onUserGeometry);
+    win.on("move", onUserGeometry);
+    win.on("moved", onUserGeometry);
     const noteUserResize = () => {
       userSized = true;
+      if (!applyingFit && !applyingDock && dock && win) {
+        const b = win.getBounds();
+        if (dock.isHidden()) {
+          const rest = dock.getRest();
+          if (rest) dock.setRest({ ...rest, width: b.width, height: b.height });
+          dock.retarget();
+        } else {
+          dock.noteUserBounds(b);
+        }
+      }
       persistWindowBounds();
     };
     win.on("will-resize", noteUserResize);
@@ -440,16 +560,17 @@ function runWidgetMain({
 
     win.on("close", (event) => {
       if (app.isQuitting) return;
-      persistWindowBounds();
       if (policy.nativeClose === "hide") {
         event.preventDefault();
-        win?.hide();
+        concealWindow();
         return;
       }
       requestQuit();
     });
 
     win.on("closed", () => {
+      dock?.dispose();
+      dock = null;
       win = null;
     });
   }
@@ -475,10 +596,7 @@ function runWidgetMain({
       },
       {
         label: "Hide widget",
-        click: () => {
-          persistWindowBounds();
-          win?.hide();
-        },
+        click: () => concealWindow(),
       },
       {
         label: "Open full dashboard",
@@ -496,14 +614,14 @@ function runWidgetMain({
     ]);
     tray.setContextMenu(menu);
     tray.on("click", () => {
-      if (win?.isVisible()) {
-        persistWindowBounds();
-        win.hide();
-      } else showWindow();
+      if (win?.isVisible()) concealWindow();
+      else showWindow();
     });
   }
 
   function stopServer() {
+    stopPointerPoll();
+    dock?.dispose();
     if (reviveTimer) {
       clearTimeout(reviveTimer);
       reviveTimer = null;
@@ -526,8 +644,11 @@ function runWidgetMain({
   }
 
   ipcMain.handle("widget:close", () => {
-    persistWindowBounds();
-    win?.hide();
+    concealWindow();
+  });
+
+  ipcMain.handle("widget:pointer", (_evt, inside) => {
+    dock?.notePointer(Boolean(inside));
   });
 
   ipcMain.handle("widget:open-dashboard", () => {

@@ -101,7 +101,7 @@ tuw --help
 
 |                   |                                                                                                                     |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **Corner widget** | Frameless, always-on-top, bottom-right; auto-starts the local API; revives it if the server dies; persists size     |
+| **Corner widget** | Frameless, always-on-top; slides off the nearest edge until you hover the strip; auto-starts the local API; revives it if the server dies; persists size |
 | **Dashboard**     | Clean multi-provider meters with reset countdowns                                                                   |
 | **Setup Q&A**     | `tuw setup` / `tuw enable <id>` — enable providers, paste keys only when needed; refreshes the widget |
 | **Fail-closed**   | Missing creds → clear unavailable/error, not fake percentages                                                       |
@@ -161,7 +161,7 @@ npm run widget:startup:disable  # remove login launch (preserves config)
 npm run widget:status           # inspect login-launch status
 ```
 
-Frameless, always-on-top, bottom-right of the work area. Starts the local API if needed and revives it if it dies. On Windows the widget lives in the system tray; on macOS it lives in the menu bar with no Dock icon. Tray/menu: show / hide / quit / open full dashboard.
+Frameless and always-on-top. It starts at the bottom-right of the work area, then slides off the nearest screen edge and leaves a thin strip. Hover that strip and the widget slides open. Move the pointer away and it slides away again. The saved position stays on screen. Starts the local API if needed and revives it if it dies. On Windows the widget lives in the system tray; on macOS it lives in the menu bar with no Dock icon. Tray/menu: show / hide / quit / open full dashboard. The tray Hide command hides the window completely.
 
 If the configured `server.port` is already taken by an unrelated listener or a fixture-mode mismatch, the widget picks a free loopback port and both the widget and the dashboard use that same returned endpoint. The unrelated listener is left alive. The configured port in `config.json` is never rewritten.
 

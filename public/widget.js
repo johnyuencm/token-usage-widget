@@ -122,6 +122,14 @@ document.getElementById("btn-quit").addEventListener("click", () => {
   window.widgetBridge?.quit?.();
 });
 
+function reportPointer(inside) {
+  const pending = window.widgetBridge?.setPointerInside?.(inside);
+  Promise.resolve(pending).catch(() => {});
+}
+
+document.documentElement.addEventListener("pointerenter", () => reportPointer(true));
+document.documentElement.addEventListener("pointerleave", () => reportPointer(false));
+
 window.addEventListener("resize", () => {
   if (wrapResizeTimer) clearTimeout(wrapResizeTimer);
   wrapResizeTimer = setTimeout(() => {

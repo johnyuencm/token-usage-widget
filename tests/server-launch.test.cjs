@@ -21,7 +21,7 @@ const {
   selectDisplay,
   calculateCornerBounds,
 } = require("../desktop/platform-policy.cjs");
-const { saveBounds, loadBounds, boundsFile } = require("../desktop/widget-bounds.cjs");
+const { saveBounds, loadBounds, boundsFile, DOCK_PEEK_PX } = require("../desktop/widget-bounds.cjs");
 
 function createFakeChild() {
   const child = new EventEmitter();
@@ -52,6 +52,7 @@ async function loadMainHarness(
     primaryDisplay = { workArea: { x: 0, y: 0, width: 1920, height: 1080 } },
     pointerDisplay = { workArea: { x: 1920, y: 24, width: 1440, height: 876 } },
     userDataDir,
+    dockTiming = null,
   } = {},
 ) {
   const mainPath = require.resolve("../desktop/main.cjs");
@@ -249,7 +250,7 @@ async function loadMainHarness(
     delete require.cache[mainPath];
   }
   assert.equal(typeof mainModule.runWidgetMain, "function");
-  mainModule.runWidgetMain({ electron, serverLaunch: launchModule, platform });
+  mainModule.runWidgetMain({ electron, serverLaunch: launchModule, platform, dockTiming });
   await new Promise((resolve) => setImmediate(resolve));
 
   return {
@@ -991,6 +992,43 @@ function idleWin32Server() {
     },
   };
 }
+
+test("Win32 widget slides to the edge strip and opens on hover", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
+  const home = { x: 1584, y: 892, width: 320, height: 172 };
+  saveBounds(dir, home);
+  const harness = await loadMainHarness(idleWin32Server(), {
+    platform: "win32",
+    userDataDir: dir,
+    dockTiming: { hideDelayMs: 0, slideMs: 0, pollMs: 0 },
+  });
+  const window = harness.windows[0];
+  window.emit("ready-to-show");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(window.getBounds(), {
+    x: home.x,
+    y: 1080 - DOCK_PEEK_PX,
+    width: home.width,
+    height: home.height,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  window.emit("will-resize");
+  const parkedSave = loadBounds(dir);
+  assert.equal(parkedSave.userSized, true);
+  assert.equal(parkedSave.x, home.x);
+  assert.equal(parkedSave.y, home.y);
+  assert.equal(parkedSave.width, home.width);
+  assert.equal(parkedSave.height, home.height);
+
+  await harness.ipcHandlers.get("widget:pointer")({}, true);
+  assert.equal(window.getBounds().y, home.y);
+  assert.equal(window.getBounds().x, home.x);
+
+  await harness.ipcHandlers.get("widget:pointer")({}, false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(window.getBounds().y, 1080 - DOCK_PEEK_PX);
+  assert.equal(loadBounds(dir).y, home.y);
+});
 
 test("Win32 fit-content leaves a user-sized rectangle unchanged", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));

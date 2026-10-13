@@ -27,6 +27,7 @@ html, body {
 body {
   display: flex;
   flex-direction: column;
+  box-shadow: inset 0 3px 0 #6fd0de;
 }
 
 .chrome {
