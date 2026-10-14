@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -188,6 +189,10 @@ function createCursorDbReader(): {
   let tmp: string | null = null;
   let copied: Promise<void> | null = null;
   const get = async (dbPath: string, sql: string): Promise<string> => {
+    // sqlite3 creates a missing path. Reject before any open.
+    if (!existsSync(dbPath)) {
+      throw new Error(`Failed to read Cursor state.vscdb: database file does not exist (${dbPath})`);
+    }
     try {
       return await sqliteScalar(dbPath, sql);
     } catch (err) {

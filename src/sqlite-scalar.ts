@@ -52,7 +52,8 @@ async function sqlite3CliGet(
   execFileImpl: SqliteExecFile,
 ): Promise<string> {
   try {
-    const result = await execFileImpl("sqlite3", [dbPath, sql], {
+    // -readonly: do not create a missing file or write a live database.
+    const result = await execFileImpl("sqlite3", ["-readonly", dbPath, sql], {
       windowsHide: true,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,

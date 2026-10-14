@@ -169,6 +169,22 @@ test("sqliteScalar falls back to sqlite3 CLI when node:sqlite fails", async () =
   assert.equal(value, "from-cli");
 });
 
+test("sqliteScalar sqlite3 CLI passes -readonly", async () => {
+  let args: string[] = [];
+  const value = await sqliteScalar("state.vscdb", "SELECT 1;", {
+    nodeSqliteGet: () => {
+      throw new Error("node:sqlite unavailable");
+    },
+    execFile: async (_cmd, cliArgs) => {
+      args = cliArgs;
+      return { stdout: "1\n" };
+    },
+  });
+  assert.equal(value, "1");
+  assert.equal(args[0], "-readonly");
+  assert.deepEqual(args.slice(1), ["state.vscdb", "SELECT 1;"]);
+});
+
 test("Cursor reads access token from state.vscdb without sqlite3 CLI", async (t) => {
   let DatabaseSync: new (file: string) => {
     exec(sql: string): void;
@@ -201,11 +217,12 @@ test("Cursor reads access token from state.vscdb without sqlite3 CLI", async (t)
 
 test("Cursor reader skips the copy when the read fails without a lock", async (t) => {
   const dir = await makeTempDir(t);
+  const missing = path.join(dir, "missing.vscdb");
   const before = new Set(await readdir(os.tmpdir()));
   const reader = cursorTest.createCursorDbReader();
   try {
     await assert.rejects(
-      reader.get(path.join(dir, "missing.vscdb"), "SELECT 1;"),
+      reader.get(missing, "SELECT 1;"),
       /Failed to read Cursor state\.vscdb/,
     );
   } finally {
@@ -213,6 +230,7 @@ test("Cursor reader skips the copy when the read fails without a lock", async (t
   }
   const leaked = (await readdir(os.tmpdir())).filter((f) => f.startsWith("tuw-cursor-") && !before.has(f));
   assert.deepEqual(leaked, [], "no tmp copy for a non-lock failure");
+  assert.equal((await readdir(dir)).includes("missing.vscdb"), false, "a missing state.vscdb must not be created");
 });
 
 test("Cursor reader copies a locked DB once and reads both keys from that copy", async (t) => {
