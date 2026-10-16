@@ -1173,6 +1173,30 @@ test("Win32 keeps the saved home while its display is away", async () => {
   assert.deepEqual(loadBounds(dir), saved);
 });
 
+test("Win32 quit while a display is away saves the home, not the clamped spot", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
+  const primary = {
+    id: 1,
+    bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+    workArea: { x: 0, y: 0, width: 1920, height: 1032 },
+  };
+  const side = { id: 2, bounds: { x: 1920, y: 0, width: 1920, height: 1080 }, workArea: { x: 1920, y: 0, width: 1920, height: 1032 } };
+  let displays = [primary, side];
+  const saved = { x: 2400, y: 300, width: 240, height: 140, userSized: true };
+  saveBounds(dir, saved);
+  const harness = await loadMainHarness(idleWin32Server(), {
+    platform: "win32",
+    userDataDir: dir,
+    primaryDisplay: primary,
+    displays: () => displays,
+  });
+  displays = [primary];
+  harness.screen.emit("display-removed");
+  assert.ok(harness.windows[0].getBounds().x + 240 <= 1920);
+  harness.app.quit();
+  assert.deepEqual(loadBounds(dir), saved);
+});
+
 test("Win32 a manual move updates the saved home", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
   saveBounds(dir, { x: 400, y: 300, width: 240, height: 140, userSized: true });

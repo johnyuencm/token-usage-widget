@@ -96,7 +96,11 @@ function scheduleRefresh() {
 
 async function loadUsage() {
   const res = await fetch("/api/usage", { cache: "no-store" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    // A bad config.json comes back as a 500 with its message; show that, not the code.
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error || `HTTP ${res.status}`);
+  }
   renderAll(await res.json());
 }
 

@@ -34,7 +34,10 @@ export async function fetchProviderThrottled(id: ProviderId, cfg: Config): Promi
   const p = fetchProvider(id, cfg)
     .then((usage) => {
       const prev = cache.get(id);
-      if (usage.error && prev && !prev.usage.error && !prev.errorRetry) {
+      // Only data from the last regular poll counts: after a long gap (sleep, idle)
+      // old data must not hide an error, and the adapter's own age cap must hold.
+      const recent = prev && startedAt - prev.fetchedAtMs <= 2 * minMs;
+      if (usage.error && prev && recent && !prev.usage.error && !prev.errorRetry) {
         // One error keeps the last good data (its own fetchedAt shows its age) and
         // retries soon. A second error in a row shows, so a lasting failure is not hidden.
         cache.set(id, { fetchedAtMs: startedAt, usage: prev.usage, errorRetry: true });

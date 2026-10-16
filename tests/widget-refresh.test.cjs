@@ -29,7 +29,7 @@ function fakeEl() {
   });
 }
 
-function runScript(file, fetchImpl) {
+function runScript(file, fetchImpl, extra = {}) {
   const intervals = [];
   const elements = new Map();
   const document = fakeEl();
@@ -61,10 +61,11 @@ function runScript(file, fetchImpl) {
     },
     TokenUsageFmt: { formatReset: () => "" },
   };
+  Object.assign(context, extra);
   context.globalThis = context;
   context.window.addEventListener = () => {};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "..", "public", file), "utf8"), context);
-  return { intervals, elements, live: () => intervals.filter((t) => !t.cleared) };
+  return { intervals, elements, document, live: () => intervals.filter((t) => !t.cleared) };
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -83,6 +84,40 @@ test("widget keeps one refresh timer after a failed first load", async () => {
   run.live()[0].fn();
   await tick();
   assert.equal(run.live().length, 1, "a later render does not add a second timer");
+});
+
+test("widget sends the body height to fit, not the root scrollHeight (D1)", async () => {
+  const sent = [];
+  const usage = { providers: [], fetchedAt: new Date().toISOString(), ui: { refreshIntervalSec: 60 } };
+  const run = runScript("widget.js", async () => ({ ok: true, json: async () => usage }), {
+    requestAnimationFrame: (fn) => fn(),
+    window: { widgetBridge: { fitContent: (payload) => sent.push(payload) } },
+  });
+  // The root scrollHeight is never below the window height, so it can not shrink the widget.
+  const root = run.document.documentElement;
+  root.scrollHeight = 400;
+  root.getBoundingClientRect = () => ({ height: 400 });
+  run.document.body.getBoundingClientRect = () => ({ height: 123 });
+  run.live()[0].fn();
+  await tick();
+  assert.equal(sent.at(-1).height, 123);
+});
+
+test("widget shows the server error text and clears it after recovery (B4, UI-6)", async () => {
+  let ok = false;
+  const usage = { providers: [], fetchedAt: new Date().toISOString(), ui: { refreshIntervalSec: 60 } };
+  const run = runScript("widget.js", async () =>
+    ok
+      ? { ok: true, json: async () => usage }
+      : { ok: false, status: 500, json: async () => ({ error: "config.json cannot be read" }) },
+  );
+  await tick();
+  const status = run.elements.get("status");
+  assert.equal(status.title, "config.json cannot be read");
+  ok = true;
+  run.live()[0].fn();
+  await tick();
+  assert.equal(status.title, "");
 });
 
 test("dashboard poll does not overwrite unsaved settings edits", async () => {

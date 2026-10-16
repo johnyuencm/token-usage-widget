@@ -668,6 +668,14 @@ test("poll cache keeps the last good entry after one error and retries soon (B8)
   assert.match(second.error ?? "", /HTTP 500/, "a second error in a row shows");
 });
 
+test("poll cache shows an error after a long gap, not old good data (B8)", async (t) => {
+  const { cfg, good } = openrouterPoll(t, () => 500);
+  // 8 h asleep: the good entry is far older than one poll period.
+  pollTest.cache.set("openrouter", { fetchedAtMs: Date.now() - 8 * 3600_000, usage: good });
+  const after = await fetchProviderThrottled("openrouter", cfg);
+  assert.match(after.error ?? "", /HTTP 500/);
+});
+
 test("an old fetch does not delete a newer inflight entry (B5)", async (t) => {
   const gates: Array<() => void> = [];
   const { cfg } = openrouterPoll(t, () => new Promise<number>((r) => gates.push(() => r(200))));
