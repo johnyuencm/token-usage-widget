@@ -141,4 +141,14 @@ Fix ideas: CLI-1 start from the existing flags and only set detected agents to t
   - SKIPPED: STARTUP-1 (plausible; the shortcut root comes from desktop/main.cjs) and CLI-9 (needs a server reload endpoint or an owner field on /api/health).
 - `npm run verify`: exit 0. 274 tests: 271 pass, 0 fail, 3 skipped (macOS/Linux only). E2E PASS.
 - Live widget restarted on the branch: window 222x142 at 125% (no growth); lines `codex: Month 92% left (29d 23h)`, `cursor: limit hit, total 42% ...`, `claude: 5h 37% (4h 31m)`.
-- Independent verification: in progress (fresh agent, same model family; a second family is not available in this session).
+- Independent verification (fresh agent, same model family; a second family is not available in this session): SHIP WITH FIXES. No fix claim was false. Follow-up:
+  - P1 FIXED: B8 kept old good data with no age limit, which undid the A2 cap (8 h gap + error showed `5h 95%`). Now only data from the last regular poll (age <= 2 poll periods) is kept.
+  - P9 FIXED: the widget showed `HTTP 500` for a bad config.json; it now shows the server's error text.
+  - P4/P5 FIXED: tests added for quit while a display is away (D3), the renderer fit height (D1) and the cleared tooltip (UI-6). Each fails without its fix.
+  - P2 KEPT (decision): one error stays hidden for at most one widget refresh (60 s default), so a single blip does not blank good data. A second error in a row shows.
+  - P3 KEPT (decision): on one monitor with a bottom taskbar, a widget near the bottom but more than 32 px from a side stays open instead of covering the taskbar. Near a corner it parks on the side edge.
+  - P6 KEPT (decision): `setup --defaults` still turns on a detected agent, as README says "Enable detected local agents"; a saved false is not told apart from a default false.
+  - P7 KEPT: fit may grow now. This replaces the 220x140 floor rule from 8f69ea5, because that rule plus the scrollHeight bug made fit do nothing.
+  - P10 not new: a checkout path with a defined `%VAR%` fails on master too.
+- After the follow-up: `npm run verify` exit 0, 278 tests: 275 pass, 0 fail, 3 skipped; E2E PASS.
+- Next step: the owner decides on the merge of `fix/logic-hunt-2026-10-16` into master. Not tested on a real Mac: B11 and CLI-7.
