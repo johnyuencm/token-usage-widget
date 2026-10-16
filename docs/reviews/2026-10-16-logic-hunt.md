@@ -1,6 +1,24 @@
 # 2026-10-16 logic hunt: feedback loops and broken logic
 
-Status: in progress. Desktop, adapter and backend parts done. The CLI and UI part runs in an agent and is added here when it finishes.
+Status: done. 39 unique findings: 30 CONFIRMED, 9 PLAUSIBLE (D 3, A 10, B 12, CLI/UI 14 after 4 duplicates). Commander spot-checked 2 or more items per agent area.
+
+```mermaid
+flowchart TB
+  F[Feedback loops: a forced or lossy value saved as truth] --> F1[D0 window grows 1.25x per start, fixed]
+  F --> F2[D3 monitor drop moves the saved home]
+  F --> F3[B3 blank select saves 30 s poll]
+  F --> F4[B6 deleted config comes back]
+  F --> F5[CLI-1 and CLI-2 setup overwrites flags and edits]
+  S[Old data shown as fresh] --> S1[B1 response time, not data age]
+  S --> S2[B2 TTL equals refresh period]
+  S --> S3[A2 Claude cache with no age limit]
+  S --> S4[B8 one error replaces good data]
+  X[Dead or misleading logic] --> X1[D1 fit never changes height]
+  X --> X2[D2 parked widget stays visible]
+  X --> X3[A1 codex % is left, others used]
+  X --> X4[A3 error guard never true]
+  X --> X5[B4 bad JSON shows No providers]
+```
 
 The D0 fix is in the working tree, not committed yet (desktop/main.cjs, desktop/widget-dock.cjs, tests/server-launch.test.cjs). The owner decides on the commit.
 
@@ -73,3 +91,30 @@ Spot-checked by commander: B1 (server.ts:49), B2 (poll-cache.ts:18) and B5 (sett
 | B12 | src/config.ts:206; desktop/main.cjs:42-43 | Server binds config `server.host`; desktop checks 127.0.0.1. With a LAN IP the widget never connects. | PLAUSIBLE |
 
 Fix ideas: B1 send the oldest provider `fetchedAt`, or show age per provider. B2 TTL margin (`< minMs - 5_000`). B3 ignore non-positive values and keep the current one; add the current value as an option. B4 surface `configError`. B5 delete the `resetPollCache()` call. B6 migrate only when the user-data folder is new, and write through `parseConfigText` + `writeConfigFile`. B8 keep the last good entry when the new result has an error, or give errors a short TTL.
+
+## CLI and browser UI (agent hunt)
+
+Spot-checked by commander: CLI-1 (setup.ts:57 replaces all flags) and UI-6 (widget.js renderAll never clears `title`). Both hold.
+
+Duplicates of items above: UI-1 = B3, UI-3 = B1, UI-2 = D1, FMT-1 = A9. They are not listed again.
+
+| id | file:line | defect | verdict |
+|----|-----------|--------|---------|
+| CLI-1 | src/cli/setup.ts:57-62 | `tuw setup --defaults` replaces all provider flags: it turns off OpenRouter that the user enabled, and turns on providers that the user disabled. | CONFIRMED |
+| CLI-2 | src/cli/setup.ts:55,69,116-121; src/cli/providers.ts:289-292 | Setup reads config once, waits at prompts, then writes that old copy. A dashboard save made during the prompts is lost (repro: 900 -> 60). | CONFIRMED |
+| CLI-3 | scripts/start-widget.cjs:134-138 | `cmd /d /c <path>` fails when the checkout path contains `&`. | CONFIRMED |
+| CLI-4 | setup.ts:207-210, providers.ts:370-373, startup.ts:371-374 | Through a junction or symlink, the "run directly" check is false; the CLI does nothing and exits 0. | CONFIRMED |
+| UI-4 | public/app.js:312-318 | Each poll redraws the dashboard; a collapsed Cursor card opens again. | CONFIRMED |
+| UI-5 | public/app.js:314,317 | The render uses old `uiSettings` before it applies `data.ui`; outside display changes show one poll late. | CONFIRMED |
+| UI-6 | public/widget.js:80-81,107 | After one failure, the "HTTP 500" tooltip stays after recovery. | CONFIRMED |
+| CLI-5 | src/cli/provider-config.ts:165-168; providers.ts:268-273 | The key prompt says "none detected" when config.json already has a key. | CONFIRMED |
+| CLI-6 | src/cli/refresh-runtime.ts:144-157,206 | On a LAN-IP bind our server answers 401 and the CLI says "used by another app"; on `::` the probe URL is invalid. It still prints "Widget refreshed." | CONFIRMED |
+| CLI-7 | src/cli/setup.ts:181-190 | macOS: each setup installs the LaunchAgent again, also after disable. | CONFIRMED |
+| CLI-8 | src/cli/startup.ts:326-329 | Windows: `remove` does nothing and exits 0; README:154 says it removes the launch. | CONFIRMED |
+| PS-1 | scripts/start-widget.ps1:15-24 | One Node path found makes `NODE_BINARY` "C" (string index); a fallback hides it. | CONFIRMED |
+| STARTUP-1 | src/cli/startup.ts:256-260,306-309; desktop/main.cjs:385-388 | Under nvm4w the Startup shortcut points into a folder for one Node version. | PLAUSIBLE |
+| CLI-9 | src/cli/refresh-runtime.ts:159-163,203-205 | `tuw enable`/`disable` stops a separate `tuw start` server and starts a widget that the user did not ask for. | PLAUSIBLE |
+
+Notes outside the area (not counted): `main.cjs:405-407` points an existing Startup shortcut at whichever copy ran last; `widget-bounds.cjs:73` keeps `userSized` for ever with no UI to reset it; the hint at `index.html:238` does not match `app.js`.
+
+Fix ideas: CLI-1 start from the existing flags and only set detected agents to true. CLI-2 read the config again just before the write. CLI-3 start `electron.exe` directly. CLI-4 compare `realpathSync(argv[1])`. UI-4 keep the expanded state per provider. UI-6 `statusEl.title = ""` in `renderAll`. CLI-8 delete the Startup `.lnk` or exit nonzero.
