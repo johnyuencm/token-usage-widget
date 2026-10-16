@@ -118,3 +118,11 @@ Duplicates of items above: UI-1 = B3, UI-3 = B1, UI-2 = D1, FMT-1 = A9. They are
 Notes outside the area (not counted): `main.cjs:405-407` points an existing Startup shortcut at whichever copy ran last; `widget-bounds.cjs:73` keeps `userSized` for ever with no UI to reset it; the hint at `index.html:238` does not match `app.js`.
 
 Fix ideas: CLI-1 start from the existing flags and only set detected agents to true. CLI-2 read the config again just before the write. CLI-3 start `electron.exe` directly. CLI-4 compare `realpathSync(argv[1])`. UI-4 keep the expanded state per provider. UI-6 `statusEl.title = ""` in `renderAll`. CLI-8 delete the Startup `.lnk` or exit nonzero.
+
+## Next steps (proposed, waiting for the owner)
+
+1. Commit the D0 fix that is in the working tree (desktop/main.cjs, desktop/widget-dock.cjs, tests/server-launch.test.cjs; `npm test` 229 pass, 0 fail).
+2. Fix the "saved as truth" group: D3, B3/UI-1, B6, CLI-1, CLI-2. Add one test per fix.
+3. Fix the "old data shown as fresh" group: B1/UI-3, B2, A2, B8. Add one test per fix.
+4. Then the "dead or misleading logic" group: D1/UI-2, D2, A1, A3, B4, B5.
+5. Owner check, outside the code: Codex limits report `planType: "free"` while the account reports `"plus"`; Cursor reports "You've hit your usage limit".
