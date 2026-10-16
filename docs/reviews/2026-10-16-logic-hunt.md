@@ -134,6 +134,6 @@ Fix ideas: CLI-1 start from the existing flags and only set detected agents to t
 - A1-A10, B1-B10: fixed, commit 2a4c50b.
   - A7 changed by commander: round like the vendor bills (Cursor 12.87% shows 13%), but never show 100% used below 100, or 0% left above 0. Floor rounding disagreed with the Cursor bill.
   - B12 SKIPPED: the desktop always passes `USAGE_HOST` (server-launch.cjs:312), so an env override made the server ignore `server.host` and broke `0.0.0.0` LAN binds. A real fix needs the desktop to read the server config.
-  - Side effect: one backend test run wrote an empty `%APPDATA%	oken-usage-widget\.cwd-config-migrated` marker (B6). The server writes the same file on its first start, so it does no harm. Tests now use a temp config.
+  - Side effect: one backend test run wrote an empty `%APPDATA%/token-usage-widget/.cwd-config-migrated` marker (B6). The server writes the same file on its first start, so it does no harm. Tests now use a temp config.
 - Open hand-off: `public/app.js` A7 rounding (`fmtPctWhole`) and an A4 "limit hit" marker on the Cursor card. Commander does it after the CLI/UI agent finishes.
 - CLI/UI items and B11: in progress (agent).
