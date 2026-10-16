@@ -126,3 +126,10 @@ Fix ideas: CLI-1 start from the existing flags and only set detected agents to t
 3. Fix the "old data shown as fresh" group: B1/UI-3, B2, A2, B8. Add one test per fix.
 4. Then the "dead or misleading logic" group: D1/UI-2, D2, A1, A3, B4, B5.
 5. Owner check, outside the code: Codex limits report `planType: "free"` while the account reports `"plus"`; Cursor reports "You've hit your usage limit".
+
+## Fix status (branch `fix/logic-hunt-2026-10-16`)
+
+- D0: fixed, commit cc5248d.
+- D1, D2, D3, UI-6: fixed, commit a9865da. Real-app checks on the 3-monitor machine: the default corner stays open, display2 parks right, a monitor drop and return restores the home at 223x143 (not 279x178), and fit shrinks 400 px to 140 px. New: every main.cjs setBounds goes through `placeWindow`, because one setBounds across display scales is wrong (221 -> 278 at 125%, 177 at 100%).
+- A1-A10: fixed in the working tree (agent), not committed yet. Open hand-offs: `tests/usage.test.ts:260-261` expected values for the A7 rounding; `public/app.js` A7 rounding (`fmtPctWhole`) and an A4 "limit hit" marker on the Cursor card.
+- B1-B12 and CLI/UI items: in progress (agents).
