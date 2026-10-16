@@ -15,6 +15,8 @@ const DEFAULT_UI = {
 
 let uiSettings = structuredClone(DEFAULT_UI);
 let refreshTimer = null;
+/** Open/closed state of the Cursor billing details; it outlives each redraw. */
+let cursorBillExpanded = true;
 
 const providersEl = document.getElementById("providers");
 const footerStatus = document.getElementById("footer-status");
@@ -37,9 +39,14 @@ function fmtPct(value) {
   return `${Number(value).toFixed(1)}%`;
 }
 
-function fmtPctWhole(value) {
+/** Whole %, but never full or empty early: 99.6% used is 99%, 0.4% left is 1%. */
+function fmtPctWhole(value, mode = "used") {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
-  return `${Math.round(Number(value))}%`;
+  const x = Number(value);
+  let n = Math.round(x);
+  if (mode === "remaining" && x > 0 && n === 0) n = 1;
+  if (mode !== "remaining" && x < 100 && n === 100) n = 99;
+  return `${n}%`;
 }
 
 function fmtTokens(value) {
@@ -123,7 +130,7 @@ function renderWindow(parent, winId, win, providerId) {
     win.status === "ok" ? pctFmt(win.usedPercent) : "Unavailable";
   node.querySelector(".stat-remaining").textContent =
     win.status === "ok" && win.remainingPercent !== null && win.remainingPercent !== undefined
-      ? pctFmt(win.remainingPercent)
+      ? pctFmt(win.remainingPercent, "remaining")
       : win.status === "ok"
         ? "uncapped"
         : "Unavailable";
@@ -201,8 +208,10 @@ function renderCursorBilling(parent, billing, error, display) {
   const summaryParts = [];
   if (show.auto && auto !== null && auto !== undefined) summaryParts.push(`${fmtPctWhole(auto)} First-party models`);
   if (show.api && api !== null && api !== undefined) summaryParts.push(`${fmtPctWhole(api)} API`);
+  // A hit limit blocks requests even when the included % looks low, so say it first.
+  const limit = billing.limitHit ? `${billing.displayMessage || "You've hit your usage limit"}. ` : "";
   if (summaryParts.length) {
-    summary.textContent = `${summaryParts.join(" and ")} used`;
+    summary.textContent = `${limit}${summaryParts.join(" and ")} used`;
   } else if (billing.displayMessage) {
     summary.textContent = billing.displayMessage;
   } else {
@@ -240,7 +249,7 @@ function renderCursorBilling(parent, billing, error, display) {
   const rem = node.querySelector(".bill-remaining");
   rem.textContent =
     billing.remainingPercent !== null && billing.remainingPercent !== undefined
-      ? `${fmtPctWhole(billing.remainingPercent)} remaining this cycle`
+      ? `${fmtPctWhole(billing.remainingPercent, "remaining")} remaining this cycle`
       : "";
 
   if (error) {
@@ -251,12 +260,15 @@ function renderCursorBilling(parent, billing, error, display) {
 
   const toggle = node.querySelector(".bill-summary");
   const details = node.querySelector(".bill-details");
-  toggle.addEventListener("click", () => {
-    const open = details.hidden;
+  function setExpanded(open) {
+    cursorBillExpanded = open;
     details.hidden = !open;
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
     card.dataset.expanded = open ? "true" : "false";
-  });
+  }
+  // Each poll draws a new card: keep the user's open/closed choice.
+  if (show.auto || show.api) setExpanded(cursorBillExpanded);
+  toggle.addEventListener("click", () => setExpanded(details.hidden));
 
   parent.appendChild(node);
 }
@@ -310,9 +322,7 @@ function renderProvider(p) {
 }
 
 function renderAll(data) {
-  providersEl.innerHTML = "";
-  for (const p of data.providers) renderProvider(p);
-  fixtureBadge.hidden = !data.fixture;
+  // Apply the settings first, so this render already uses a display change.
   if (data.ui) {
     uiSettings = mergeUi(data.ui);
     setRefreshInterval(uiSettings.refreshIntervalSec);
@@ -320,6 +330,9 @@ function renderAll(data) {
     // overwrite unsaved edits. loadSettings and saveSettings fill it otherwise.
     if (!settingsFormFilled) populateSettingsForm();
   }
+  providersEl.innerHTML = "";
+  for (const p of data.providers) renderProvider(p);
+  fixtureBadge.hidden = !data.fixture;
 }
 
 function updateClock() {
@@ -345,11 +358,32 @@ async function refresh() {
 
 let settingsFormFilled = false;
 
+/**
+ * A saved interval with no <option> (e.g. 3600 s from config.json) would show
+ * blank and then save as 0. Add an option for it first.
+ */
+function setSelectSec(select, sec) {
+  const value = String(sec);
+  if (![...select.options].some((o) => o.value === value)) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = formatRefreshHint(sec);
+    select.appendChild(opt);
+  }
+  select.value = value;
+}
+
+/** Seconds from a select, or undefined (JSON drops it) for a blank or non-positive value. */
+function selectSec(select) {
+  const n = Number(select.value);
+  return n > 0 ? n : undefined;
+}
+
 function populateSettingsForm() {
   if (!settingsForm) return;
   settingsFormFilled = true;
-  settingsForm.refreshIntervalSec.value = String(uiSettings.refreshIntervalSec);
-  settingsForm.pollClaudeSec.value = String(uiSettings.pollIntervalSec.claude ?? 300);
+  setSelectSec(settingsForm.refreshIntervalSec, uiSettings.refreshIntervalSec);
+  setSelectSec(settingsForm.pollClaudeSec, uiSettings.pollIntervalSec.claude ?? 300);
   settingsForm.claudeFiveHour.checked = uiSettings.display.claude.fiveHour;
   settingsForm.claudeWeek.checked = uiSettings.display.claude.week;
   settingsForm.claudeSpend.checked = uiSettings.display.claude.spend;
@@ -374,9 +408,10 @@ async function loadSettings() {
 }
 
 function readSettingsFromForm() {
+  const claude = selectSec(settingsForm.pollClaudeSec);
   return {
-    refreshIntervalSec: Number(settingsForm.refreshIntervalSec.value),
-    pollIntervalSec: { claude: Number(settingsForm.pollClaudeSec.value) },
+    refreshIntervalSec: selectSec(settingsForm.refreshIntervalSec),
+    pollIntervalSec: claude ? { claude } : undefined,
     display: {
       claude: {
         fiveHour: settingsForm.claudeFiveHour.checked,

@@ -12,11 +12,12 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Electron = Join-Path $Root "node_modules\electron\dist\electron.exe"
 
 # Startup / detached launches often lack nvm's node on PATH.
-$nodeCandidates = @(
+# The outer @() keeps an array: one match alone is a string, and [0] is then "C".
+$nodeCandidates = @(@(
   $env:npm_node_execpath,
   (Join-Path "C:\nvm4w\nodejs" "node.exe"),
   $(if ($env:NVM_SYMLINK) { Join-Path $env:NVM_SYMLINK "node.exe" })
-) | Where-Object { $_ -and (Test-Path $_) }
+) | Where-Object { $_ -and (Test-Path $_) })
 if ($nodeCandidates.Count -gt 0) {
   $env:NODE_BINARY = $nodeCandidates[0]
   $nodeDir = Split-Path -Parent $env:NODE_BINARY

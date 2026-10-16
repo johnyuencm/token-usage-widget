@@ -9,15 +9,15 @@
  * - On win32 `install` runs the checkout's electron.exe with `--install-startup`
  *   (Electron writes a Startup shortcut that targets electron.exe directly, so
  *   no cmd or PowerShell window opens at logon), then launches the widget.
- *   `remove` reports that the Startup shortcut is unmanaged by this command
- *   (it does not silently delete it).
+ *   `remove` deletes that Startup shortcut (exit 0 when it is already gone).
  *
  * No provider config, credentials, cookies, or secrets are read or embedded.
  */
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { spawn as realSpawn, type ChildProcess } from "node:child_process";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { execFile as realExecFile, spawn as realSpawn, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import {
   installLoginLaunch,
@@ -25,6 +25,7 @@ import {
   removeLoginLaunch,
   type LoginLaunchSeams,
 } from "../login-launch.js";
+import { isEntryModule } from "./entry.js";
 
 type Command = "install" | "remove" | "status";
 
@@ -56,12 +57,11 @@ function defaultSeams(): LoginLaunchSeams {
     logDir: path.join(process.env.HOME ?? process.cwd(), "Library", "Logs", "token-usage-dashboard"),
     uid: process.getuid?.() ?? 501,
     fs: realFs(),
+    // Pass launchctl's stderr through: "not loaded" is only recognized from its text.
     execFile: (cmd, args, cb) => {
-      realSpawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] })
-        .on("error", (err) => cb(err as NodeJS.ErrnoException, "", ""))
-        .on("close", (code) =>
-          cb(code === 0 ? null : (new Error(`exit ${code}`) as NodeJS.ErrnoException), "", ""),
-        );
+      realExecFile(cmd, args, (err, stdout, stderr) =>
+        cb(err as NodeJS.ErrnoException | null, String(stdout), String(stderr)),
+      );
     },
   };
 }
@@ -89,6 +89,12 @@ function runToExit(spawnFn: SpawnFn, cmd: string, args: string[], what: string):
   });
 }
 
+/** The Startup shortcut that `electron.exe --install-startup` writes (desktop/main.cjs). */
+function win32StartupShortcut(): string {
+  const appData = process.env.APPDATA?.trim() || path.join(os.homedir(), "AppData", "Roaming");
+  return path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Token Usage Widget.lnk");
+}
+
 async function runWin32InstallStartup(spawnFn: SpawnFn = realSpawn as SpawnFn): Promise<void> {
   const checkout = checkoutRoot();
   const electron = path.join(checkout, "node_modules", "electron", "dist", "electron.exe");
@@ -110,7 +116,13 @@ export async function dispatch(
       return;
     }
     if (command === "remove") {
-      log("Windows startup shortcut is not managed by this command. Remove it manually from Startup.");
+      const shortcut = win32StartupShortcut();
+      if (!fs.existsSync(shortcut)) {
+        log("Startup shortcut not installed.");
+        return;
+      }
+      fs.rmSync(shortcut, { force: true });
+      log(`Removed Startup shortcut: ${shortcut}`);
       return;
     }
     if (command === "status") {
@@ -154,12 +166,7 @@ async function main(argv: string[]): Promise<void> {
   await dispatch(command, seams.platform, seams, realSpawn as SpawnFn, (m) => console.log(m));
 }
 
-const invokedDirectly =
-  typeof process !== "undefined" &&
-  process.argv[1] &&
-  pathToFileURL(process.argv[1]).href === import.meta.url;
-
-if (invokedDirectly) {
+if (isEntryModule(import.meta.url)) {
   const args = process.argv.slice(2);
   main(args).catch((err) => {
     console.error(`Startup failed: ${err.message}`);

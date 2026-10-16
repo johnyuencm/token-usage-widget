@@ -83,6 +83,24 @@ test("resolveSetupDefaultFlags falls back to openai+cursor when nothing is detec
   assert.deepEqual(resolveSetupDefaultFlags(false, none), SETUP_DEFAULTS_ENABLED);
 });
 
+test("resolveSetupDefaultFlags keeps saved flags and only turns on detected agents", () => {
+  const saved = {
+    openai: false,
+    cursor: false,
+    claude: false,
+    openrouter: true,
+    kimi: false,
+    zai: false,
+    grok: false,
+  };
+  const providers = resolveSetupDefaultFlags(false, { ...saved, openrouter: false, openai: true }, saved);
+  assert.equal(providers.openrouter, true, "a provider the user turned on stays on");
+  assert.equal(providers.openai, true, "a detected local agent turns on");
+  assert.equal(providers.cursor, false);
+  const none = { ...saved, openrouter: false };
+  assert.deepEqual(resolveSetupDefaultFlags(false, none, saved), saved, "no fallback pair over saved flags");
+});
+
 test("resolveSetupDefaultFlags --all still enables every provider", () => {
   const providers = resolveSetupDefaultFlags(true);
   assert.equal(providers.openai, true);

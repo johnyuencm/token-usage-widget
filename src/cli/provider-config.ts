@@ -170,23 +170,34 @@ export function secretDetectNote(secret: SecretSpec, detected: string | null): s
 /** Shown after a pasted secret is stored: setup makes no validation call. */
 export const UNVALIDATED_SECRET_NOTE = "saved unvalidated — first poll will confirm it";
 
+/** config.json field that holds each secret, e.g. `openrouter.apiKey`. */
+const SECRET_FIELD: Record<NonNullable<SecretKind>, string> = {
+  openrouter: "apiKey",
+  kimi: "apiKey",
+  zai: "apiKey",
+  grok: "oauthToken",
+  claude: "accessToken",
+};
+
 export function applySecret(
   out: Record<string, unknown>,
   kind: SecretKind,
   value: string,
 ): void {
   if (!kind || !value) return;
-  if (kind === "openrouter") {
-    out.openrouter = { ...(out.openrouter as object), apiKey: value };
-  } else if (kind === "kimi") {
-    out.kimi = { ...(out.kimi as object), apiKey: value };
-  } else if (kind === "zai") {
-    out.zai = { ...(out.zai as object), apiKey: value };
-  } else if (kind === "grok") {
-    out.grok = { ...(out.grok as object), oauthToken: value };
-  } else if (kind === "claude") {
-    out.claude = { ...(out.claude as object), accessToken: value };
-  }
+  out[kind] = { ...(out[kind] as object), [SECRET_FIELD[kind]]: value };
+}
+
+/** The secret already stored in config.json, or null. */
+export function savedSecret(cfg: Record<string, unknown>, kind: SecretKind): string | null {
+  if (!kind) return null;
+  const v = (cfg[kind] as Record<string, unknown> | undefined)?.[SECRET_FIELD[kind]];
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/** Env/file detection first, then the key that config.json already has. */
+export function detectSecret(secret: SecretSpec, cfg: Record<string, unknown>): string | null {
+  return secret.detect() ?? savedSecret(cfg, secret.kind);
 }
 
 export function writeConfig(merged: Record<string, unknown>): void {
@@ -207,13 +218,7 @@ export function readProviderFlags(existing: Record<string, unknown>): ProviderFl
 }
 
 export function resolveClaudeToken(cfg: Record<string, unknown>): string | null {
-  const fromDetect = SECRET_BY_PROVIDER.claude?.detect() ?? null;
-  if (fromDetect) return fromDetect;
-  const claude = cfg.claude as { accessToken?: unknown } | undefined;
-  if (typeof claude?.accessToken === "string" && claude.accessToken.trim()) {
-    return claude.accessToken.trim();
-  }
-  return null;
+  return detectSecret(SECRET_BY_PROVIDER.claude!, cfg);
 }
 
 export function isProviderId(v: string): v is ProviderId {

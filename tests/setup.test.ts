@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runSetup, type SetupDeps } from "../src/cli/setup.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { PassThrough } from "node:stream";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { runDefaults, runInteractive, runSetup, type SetupDeps } from "../src/cli/setup.js";
+import { PROVIDER_META } from "../src/providers/registry.js";
 import {
   ensureClaudeCredentials,
   secretDetectNote,
@@ -58,10 +65,42 @@ function makeDeps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     }),
     ensureClaude: () => {},
     refreshRuntime: async () => {},
-    loadExisting: () => ({ providers: { claude: false } }),
+    // No saved config: a first setup.
+    loadExisting: () => ({}),
     ...overrides,
   };
 }
+
+const ALL_OFF = {
+  openai: false,
+  cursor: false,
+  claude: false,
+  openrouter: false,
+  kimi: false,
+  zai: false,
+  grok: false,
+};
+
+/** Point TOKEN_USAGE_WIDGET_CONFIG at a temp config.json for the run of `fn`. */
+async function withTempConfig(
+  initial: Record<string, unknown>,
+  fn: (cfgPath: string) => Promise<void>,
+): Promise<void> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-cfg-"));
+  const cfg = path.join(dir, "config.json");
+  fs.writeFileSync(cfg, JSON.stringify(initial));
+  const prev = process.env.TOKEN_USAGE_WIDGET_CONFIG;
+  process.env.TOKEN_USAGE_WIDGET_CONFIG = cfg;
+  try {
+    await fn(cfg);
+  } finally {
+    if (prev === undefined) delete process.env.TOKEN_USAGE_WIDGET_CONFIG;
+    else process.env.TOKEN_USAGE_WIDGET_CONFIG = prev;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const readJson = (p: string) => JSON.parse(fs.readFileSync(p, "utf8"));
 
 test("darwin interactive setup calls installLoginLaunch then refresh after setup resolves", async () => {
   setPlatform("darwin");
@@ -112,17 +151,36 @@ test("darwin --defaults --all calls runDefaults(true) then registers once", asyn
   }
 });
 
-test("repeated setup calls installLoginLaunch each time (refresh)", async () => {
+test("repeated setup refreshes an installed LaunchAgent each time", async () => {
   setPlatform("darwin");
   try {
     let count = 0;
+    const base = makeDeps().buildSeams();
     const deps = makeDeps({
+      loadExisting: () => ({ providers: { openai: true } }),
+      buildSeams: () => ({ ...base, fs: { ...base.fs, existsSync: () => true } }),
       installLoginLaunch: async () => { count++; return { kind: count === 1 ? "installed" : "refreshed" }; },
     });
     await runSetup(["--defaults"], deps);
     await runSetup(["--defaults"], deps);
     await runSetup(["--defaults"], deps);
     assert.equal(count, 3);
+  } finally {
+    restorePlatform();
+  }
+});
+
+test("darwin setup does not reinstall a LaunchAgent that the user removed (CLI-7)", async () => {
+  setPlatform("darwin");
+  try {
+    let registered = false;
+    const deps = makeDeps({
+      // Config from an earlier setup; the fake fs has no plist (startup:disable removed it).
+      loadExisting: () => ({ providers: { openai: true } }),
+      installLoginLaunch: async () => { registered = true; return { kind: "installed" }; },
+    });
+    await runSetup(["--defaults"], deps);
+    assert.equal(registered, false);
   } finally {
     restorePlatform();
   }
@@ -518,6 +576,74 @@ test("tuw setup with stdin closed exits 1 and writes no config", async () => {
     assert.match(res.stderr, /Input closed before setup finished/);
     assert.equal(fs.existsSync(cfg), false);
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup --defaults keeps a provider that the user turned on (CLI-1)", async () => {
+  await withTempConfig({ providers: { ...ALL_OFF, openrouter: true } }, async (cfg) => {
+    await runDefaults(false);
+    assert.equal(readJson(cfg).providers.openrouter, true);
+  });
+});
+
+test("interactive setup keeps a dashboard save made while the prompts wait (CLI-2)", async () => {
+  await withTempConfig({ providers: ALL_OFF, ui: { refreshIntervalSec: 900 } }, async (cfg) => {
+    const input = new PassThrough();
+    const run = runInteractive(input);
+    // Setup has read config.json; the dashboard now saves a new interval.
+    fs.writeFileSync(cfg, JSON.stringify({ providers: ALL_OFF, ui: { refreshIntervalSec: 60 } }));
+    const answers = PROVIDER_META.flatMap((m) => (m.id === "openrouter" ? ["y", "sk-or-test"] : ["n"]));
+    for (const answer of answers) {
+      await new Promise((r) => setImmediate(r));
+      input.write(`${answer}\n`);
+    }
+    await run;
+    const saved = readJson(cfg);
+    assert.equal(saved.ui.refreshIntervalSec, 60, "the dashboard save is kept");
+    assert.equal(saved.providers.openrouter, true, "the prompt answer is merged");
+    assert.equal(saved.openrouter.apiKey, "sk-or-test", "the pasted key is merged");
+  });
+});
+
+test("enable does not ask again for a key that config.json already has (CLI-5)", async () => {
+  const prevKey = process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  try {
+    let asked = "";
+    let store: Record<string, unknown> = { providers: ALL_OFF, openrouter: { apiKey: "sk-saved" } };
+    await enableProvider("openrouter", {
+      loadExisting: () => structuredClone(store),
+      writeConfig: (merged) => { store = merged; },
+      askLine: async (q) => { asked = q; return ""; },
+      ensureClaude: () => {},
+      refreshRuntime: async () => {},
+      log: () => {},
+    });
+    assert.equal(asked, "", `no key prompt expected, got: ${asked}`);
+    assert.equal((store.openrouter as { apiKey: string }).apiKey, "sk-saved");
+  } finally {
+    if (prevKey !== undefined) process.env.OPENROUTER_API_KEY = prevKey;
+  }
+});
+
+test("a CLI entry reached through a junction or symlink still runs (CLI-4)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-link-"));
+  const link = path.join(dir, "src");
+  fs.symlinkSync(fileURLToPath(new URL("../src", import.meta.url)), link, "junction");
+  const cfg = path.join(dir, "config.json");
+  fs.writeFileSync(cfg, JSON.stringify({ providers: { ...ALL_OFF, openai: true } }));
+  try {
+    const res = spawnSync(
+      process.execPath,
+      ["--import", "tsx", path.join(link, "cli", "providers.ts"), "providers"],
+      { env: { ...process.env, TOKEN_USAGE_WIDGET_CONFIG: cfg }, encoding: "utf8", timeout: 30_000 },
+    );
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /openai\s+on/);
+  } finally {
+    // unlink removes only the link, never the linked folder.
+    fs.unlinkSync(link);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

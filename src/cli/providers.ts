@@ -2,13 +2,13 @@
  * Single-provider toggles: tuw enable|disable <id>, tuw providers
  */
 import readline from "node:readline";
-import { pathToFileURL } from "node:url";
 import { ALL_PROVIDER_IDS, type ProviderId } from "../types.js";
 import { PROVIDER_META } from "../providers/registry.js";
 import {
   SECRET_BY_PROVIDER,
   applySecret,
   askSecret,
+  detectSecret,
   ensureClaudeCredentials,
   loadExisting,
   mutableStdout,
@@ -20,6 +20,7 @@ import {
   type EnsureClaudeDeps,
 } from "./provider-config.js";
 import { refreshRuntime, type RefreshRuntimeDeps } from "./refresh-runtime.js";
+import { isEntryModule } from "./entry.js";
 
 export type AskLineFn = (question: string) => Promise<string>;
 
@@ -56,7 +57,7 @@ async function promptSecretIfNeeded(
 ): Promise<void> {
   const secret = SECRET_BY_PROVIDER[id];
   if (!secret) return;
-  const detected = secret.detect();
+  const detected = detectSecret(secret, existing);
   if (detected) return;
   const note = secretDetectNote(secret, detected);
   const value = await askLine(`${secret.prompt}${note}: `);
@@ -156,11 +157,6 @@ async function main(): Promise<void> {
   }
 }
 
-const invokedDirectly =
-  typeof process !== "undefined" &&
-  process.argv[1] &&
-  pathToFileURL(process.argv[1]).href === import.meta.url;
-
-if (invokedDirectly) {
+if (isEntryModule(import.meta.url)) {
   void main();
 }

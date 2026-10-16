@@ -156,7 +156,8 @@ test("Win32 planning delegates to the established CMD launcher from the checkout
   });
 
   assert.equal(plan.command, comSpec);
-  assert.deepEqual(plan.args, ["/d", "/c", commandLauncher]);
+  assert.deepEqual(plan.args, ["/d", "/s", "/c", `""${commandLauncher}""`]);
+  assert.equal(plan.options.windowsVerbatimArguments, true);
   assert.equal(plan.options.cwd, checkout);
   assert.equal(plan.options.detached, false);
   assert.equal(plan.options.stdio, "inherit");
@@ -245,17 +246,58 @@ test("Darwin spawn errors identify the executable and do not leave an unreferenc
   assert.equal(killCount, 1);
 });
 
-test("Win32 plan runs the CMD launcher from a checkout path with a space", { skip: process.platform !== "win32" }, () => {
+/** Make a scratch checkout with a stub CMD launcher, then run the real Win32 plan. */
+function runWin32PlanIn(prefix) {
   const os = require("node:os");
   const { spawnSync } = require("node:child_process");
-  const checkout = fs.mkdtempSync(path.join(os.tmpdir(), "tuw sp "));
-  fs.mkdirSync(path.join(checkout, "scripts"));
-  fs.writeFileSync(path.join(checkout, "package.json"), "{}");
-  fs.writeFileSync(path.join(checkout, "scripts", "start-widget.cmd"), "@echo launcher-ran\r\n");
+  const checkout = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  try {
+    fs.mkdirSync(path.join(checkout, "scripts"));
+    fs.writeFileSync(path.join(checkout, "package.json"), "{}");
+    fs.writeFileSync(path.join(checkout, "scripts", "start-widget.cmd"), "@echo launcher-ran\r\n");
+    const plan = resolveLaunchPlan({ platform: "win32", checkout, env: process.env });
+    return spawnSync(plan.command, plan.args, {
+      cwd: plan.options.cwd,
+      encoding: "utf8",
+      windowsVerbatimArguments: plan.options.windowsVerbatimArguments,
+    });
+  } finally {
+    fs.rmSync(checkout, { recursive: true, force: true });
+  }
+}
 
-  const plan = resolveLaunchPlan({ platform: "win32", checkout, env: process.env });
-  const run = spawnSync(plan.command, plan.args, { cwd: plan.options.cwd, encoding: "utf8" });
-
+test("Win32 plan runs the CMD launcher from a checkout path with a space", { skip: process.platform !== "win32" }, () => {
+  const run = runWin32PlanIn("tuw sp ");
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /launcher-ran/);
+});
+
+test("Win32 plan runs the CMD launcher from a checkout path with & (CLI-3)", { skip: process.platform !== "win32" }, () => {
+  for (const prefix of ["tuw&amp", "tuw a&b "]) {
+    const run = runWin32PlanIn(prefix);
+    assert.equal(run.status, 0, `${prefix}: ${run.stderr}`);
+    assert.match(run.stdout, /launcher-ran/, prefix);
+  }
+});
+
+test("PowerShell launcher keeps the full Node path when only one candidate exists (PS-1)", { skip: process.platform !== "win32" }, () => {
+  const os = require("node:os");
+  const { spawnSync } = require("node:child_process");
+  const ps1 = fs.readFileSync(path.join(__dirname, "..", "scripts", "start-widget.ps1"), "utf8");
+  // Run only the Node lookup block: Start-Process (Electron) must not run in tests.
+  const start = ps1.indexOf("$nodeCandidates");
+  const block = ps1
+    .slice(start, ps1.indexOf("\n}", start) + 2)
+    .replace("C:\\nvm4w\\nodejs", path.join(os.tmpdir(), "tuw-no-nvm4w"));
+  const env = { ...process.env, npm_node_execpath: process.execPath };
+  delete env.NVM_SYMLINK;
+  delete env.NODE_BINARY;
+  const script = `${block}\n$env:NODE_BINARY`;
+  const run = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    { env, encoding: "utf8" },
+  );
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout.trim(), process.execPath);
 });

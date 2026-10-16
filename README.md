@@ -163,7 +163,7 @@ If the configured `server.port` is already taken by an unrelated listener or a f
 
 ### Windows
 
-`npm run widget:startup` installs a Windows Startup shortcut and launches. The shortcut targets `electron.exe` directly, so no console or PowerShell window opens at logon. Native window close hides the widget (tray restore); custom × and menu Quit exit.
+`npm run widget:startup` installs a Windows Startup shortcut and launches. The shortcut targets `electron.exe` directly, so no console or PowerShell window opens at logon. `npm run widget:startup:disable` deletes that shortcut. Native window close hides the widget (tray restore); custom × and menu Quit exit.
 
 ### macOS
 
@@ -173,7 +173,7 @@ macOS 13+ on Intel and Apple Silicon. Install via npm (`tuw`) or from a source c
 - **Active display:** anchors to the bottom-right of the work area on the display nearest the pointer; reanchors on show / display changes.
 - **Spaces and full-screen:** visible on all normal Spaces; does not overlay full-screen apps.
 - **Hide and quit:** hide restores from the menu bar; custom ×, native close, menu Quit, and Command-Q converge on one quit path that stops only an owned usage-server child.
-- **Login launch:** successful setup modes install or refresh a per-user LaunchAgent. `widget:startup` / `widget:startup:disable` / `widget:status` manage it without deleting `config.json`.
+- **Login launch:** the first successful setup installs a per-user LaunchAgent. A later setup refreshes it only while it is installed, so `widget:startup:disable` stays in effect. `widget:startup` / `widget:startup:disable` / `widget:status` manage it without deleting `config.json`.
 
 **Automated verification vs. real-Mac observation:** CI passes `npm run verify` on Windows, macOS Intel, and Apple Silicon runners. Real interactive menu-bar, Spaces, full-screen, login-session, and live local Cursor discovery on macOS hardware is **unverified** — the maintainer has no Mac. See the [evidence index](docs/macos-widget/evidence-index.md).
 

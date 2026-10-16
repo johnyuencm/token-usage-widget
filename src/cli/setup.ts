@@ -6,7 +6,6 @@
  *   npm run setup:all
  */
 import readline from "node:readline";
-import { pathToFileURL } from "node:url";
 import { type ProviderFlags } from "../config.js";
 import { PROVIDER_META } from "../providers/registry.js";
 import {
@@ -16,6 +15,7 @@ import {
   usedDefaultsFallback,
 } from "./detect-local.js";
 import {
+  inspectLoginLaunch,
   installLoginLaunch,
   type LoginLaunchSeams,
   type LoginLaunchResult,
@@ -27,6 +27,7 @@ import {
   askQuestion,
   askSecret,
   defaultShell,
+  detectSecret,
   ensureClaudeCredentials,
   loadExisting,
   mutableStdout,
@@ -35,8 +36,10 @@ import {
   UNVALIDATED_SECRET_NOTE,
   writeConfig,
   type EnsureClaudeDeps,
+  type SecretKind,
 } from "./provider-config.js";
 import { refreshRuntime, type RefreshRuntimeDeps } from "./refresh-runtime.js";
+import { isEntryModule } from "./entry.js";
 
 async function askYn(
   rl: readline.Interface,
@@ -51,10 +54,15 @@ async function askYn(
   return defaultYes;
 }
 
-async function runDefaults(enableAll: boolean): Promise<void> {
+function hasSavedProviders(cfg: Record<string, unknown>): boolean {
+  return Boolean(cfg.providers && typeof cfg.providers === "object");
+}
+
+export async function runDefaults(enableAll: boolean): Promise<void> {
   const existing = loadExisting();
   const detected = detectLocalAgentFlags();
-  const providers: ProviderFlags = resolveSetupDefaultFlags(enableAll, detected);
+  const saved = hasSavedProviders(existing) ? readProviderFlags(existing) : undefined;
+  const providers: ProviderFlags = resolveSetupDefaultFlags(enableAll, detected, saved);
   const merged: Record<string, unknown> = {
     ...existing,
     providers,
@@ -62,23 +70,25 @@ async function runDefaults(enableAll: boolean): Promise<void> {
   };
   writeConfig(merged);
   // eslint-disable-next-line no-console
-  console.log(formatDefaultsLog(enableAll, providers, usedDefaultsFallback(enableAll, detected)));
+  console.log(formatDefaultsLog(enableAll, providers, usedDefaultsFallback(enableAll, detected, saved)));
 }
 
-async function runInteractive(): Promise<void> {
+/** `input` is a seam for tests; the CLI reads stdin. */
+export async function runInteractive(
+  input: NodeJS.ReadableStream & { isTTY?: boolean } = process.stdin,
+): Promise<void> {
   const existing = loadExisting();
   const providers: ProviderFlags = readProviderFlags(existing);
   const localAgents = detectLocalAgentFlags();
-  const hasSavedProviders = Boolean(
-    existing.providers && typeof existing.providers === "object",
-  );
+  const hasSaved = hasSavedProviders(existing);
+  const pasted: Array<[SecretKind, string]> = [];
 
   // Muteable output so secret prompts do not echo; terminal mode keeps line editing on a TTY.
   const out = mutableStdout();
   const rl = readline.createInterface({
-    input: process.stdin,
+    input,
     output: out,
-    terminal: Boolean(process.stdin.isTTY),
+    terminal: Boolean(input.isTTY),
   });
   // eslint-disable-next-line no-console
   console.log("Token Usage Dashboard — provider setup\n");
@@ -90,7 +100,7 @@ async function runInteractive(): Promise<void> {
       const found = localAgents[meta.id] ? " [found on this machine]" : "";
       // eslint-disable-next-line no-console
       console.log(`  detect: ${meta.detectHint}${found}`);
-      const defaultYes = hasSavedProviders ? providers[meta.id] : Boolean(localAgents[meta.id]);
+      const defaultYes = hasSaved ? providers[meta.id] : Boolean(localAgents[meta.id]);
       const enable = await askYn(rl, `Enable ${meta.label}?`, defaultYes);
       providers[meta.id] = enable;
       if (!enable) continue;
@@ -98,11 +108,11 @@ async function runInteractive(): Promise<void> {
       const secret = SECRET_BY_PROVIDER[meta.id];
       if (!secret) continue;
 
-      const secretDetected = secret.detect();
+      const secretDetected = detectSecret(secret, existing);
       const detectNote = secretDetectNote(secret, secretDetected);
       const value = await askSecret(rl, out, `${secret.prompt}${detectNote}: `);
       if (value) {
-        applySecret(existing, secret.kind, value);
+        pasted.push([secret.kind, value]);
         // No validation call is made before persisting; tell the user so a
         // mistyped key is not mistaken for a provider outage later.
         // eslint-disable-next-line no-console
@@ -113,10 +123,14 @@ async function runInteractive(): Promise<void> {
     rl.close();
   }
 
+  // The prompts can wait a long time; a dashboard save made meanwhile must stay.
+  // Read config.json again and merge only the answers and the pasted secrets.
+  const latest = loadExisting();
+  for (const [kind, value] of pasted) applySecret(latest, kind, value);
   const merged: Record<string, unknown> = {
-    ...existing,
+    ...latest,
     providers,
-    server: (existing.server as object) ?? defaultShell(),
+    server: (latest.server as object) ?? defaultShell(),
   };
   writeConfig(merged);
 }
@@ -143,7 +157,9 @@ export interface SetupDeps {
 /**
  * On darwin, after a successful setup (config save), install/refresh the
  * per-user login launch using the current checkout's default seams. On other
- * platforms, setup runs unchanged. Repeated setup calls refresh the agent.
+ * platforms, setup runs unchanged. Only a first setup (no saved providers)
+ * installs the agent; a repeated setup refreshes it only while it is installed,
+ * so `npm run widget:startup:disable` stays in effect.
  *
  * After save (+ Claude credential remediation when needed), refresh the
  * running widget/server so provider changes apply without a manual restart.
@@ -167,20 +183,28 @@ export async function runSetup(args: string[], deps?: SetupDeps): Promise<void> 
     buildSeams: buildStartupSeams,
   };
 
+  const load = resolved.loadExisting ?? loadExisting;
+  const firstSetup = process.platform === "darwin" && !hasSavedProviders(load());
+
   if (defaults) {
     await resolved.runDefaults(all);
   } else {
     await resolved.runInteractive();
   }
 
-  const load = resolved.loadExisting ?? loadExisting;
   const cfg = load();
   const ensureClaude = resolved.ensureClaude ?? ensureClaudeCredentials;
   ensureClaude(cfg, resolved.ensureClaudeDeps);
 
   if (process.platform === "darwin") {
     try {
-      await resolved.installLoginLaunch(resolved.buildSeams());
+      const seams = resolved.buildSeams();
+      if (firstSetup || (await inspectLoginLaunch(seams)).kind === "installed") {
+        await resolved.installLoginLaunch(seams);
+      } else {
+        // eslint-disable-next-line no-console
+        console.log("Login launch is off; setup left it off. Turn it on with: npm run widget:startup");
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -204,11 +228,6 @@ async function main(): Promise<void> {
   }
 }
 
-const invokedDirectly =
-  typeof process !== "undefined" &&
-  process.argv[1] &&
-  pathToFileURL(process.argv[1]).href === import.meta.url;
-
-if (invokedDirectly) {
+if (isEntryModule(import.meta.url)) {
   void main();
 }

@@ -65,12 +65,22 @@ export function detectLocalAgentFlags(seams: DetectLocalSeams = {}): ProviderFla
   return flags;
 }
 
+/**
+ * `saved`: the provider flags already in config.json. Setup keeps them and only
+ * turns on detected agents, so a re-run does not undo the user's choices.
+ */
 export function resolveSetupDefaultFlags(
   enableAll: boolean,
   detected: ProviderFlags = detectLocalAgentFlags(),
+  saved?: ProviderFlags,
 ): ProviderFlags {
   if (enableAll) {
     return Object.fromEntries(ALL_PROVIDER_IDS.map((id) => [id, true])) as ProviderFlags;
+  }
+  if (saved) {
+    const out = { ...saved };
+    for (const id of LOCAL_AGENT_IDS) if (detected[id]) out[id] = true;
+    return out;
   }
   const anyLocal = LOCAL_AGENT_IDS.some((id) => detected[id]);
   if (!anyLocal) return { ...SETUP_DEFAULTS_ENABLED };
@@ -85,8 +95,9 @@ export function resolveSetupDefaultFlags(
 export function usedDefaultsFallback(
   enableAll: boolean,
   detected: ProviderFlags,
+  saved?: ProviderFlags,
 ): boolean {
-  if (enableAll) return false;
+  if (enableAll || saved) return false;
   return !LOCAL_AGENT_IDS.some((id) => detected[id]);
 }
 

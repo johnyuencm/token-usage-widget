@@ -10,7 +10,7 @@ import {
   buildPlistXml,
   type LoginLaunchSeams,
 } from "../src/login-launch.js";
-import { dispatch, type SpawnFn } from "../src/cli/startup.js";
+import { defaultSeams, dispatch, type SpawnFn } from "../src/cli/startup.js";
 
 interface FsState {
   files: Map<string, string | Buffer>;
@@ -222,8 +222,9 @@ test("install writes a temp file then atomically renames, with RunAtLoad=true an
   assert.match(xml, new RegExp(`<string>${reString(seams.launcher)}</string>`));
   assert.match(xml, new RegExp(`<string>${reString(seams.checkout)}</string>`));
   assert.match(xml, /<key>WorkingDirectory<\/key>\s*<string>\/workspace\/token-usage-dashboard<\/string>/);
-  // bootstraps gui/<uid>
+  // bootout (not-loaded tolerated), then bootstraps gui/<uid>
   assert.deepEqual(exec.calls.map((c) => ({ cmd: c.cmd, args: c.args })), [
+    { cmd: "launchctl", args: ["bootout", "gui/501/com.token-usage-dashboard.widget"] },
     { cmd: "launchctl", args: ["bootstrap", "gui/501", plistPath(seams)] },
   ]);
 });
@@ -263,7 +264,7 @@ test("install idempotently refreshes stale paths when plist differs only in path
   assert.doesNotMatch(xml, /\/old\/node\/bin\/node/);
   assert.deepEqual(
     exec.calls.map((c) => c.args),
-    [["bootout", "gui/501", "com.token-usage-dashboard.widget"], ["bootstrap", "gui/501", plistPath(seams)]],
+    [["bootout", "gui/501/com.token-usage-dashboard.widget"], ["bootstrap", "gui/501", plistPath(seams)]],
   );
 });
 
@@ -301,6 +302,48 @@ test("install tolerates expected not-loaded bootout during refresh, but surfaces
   ]);
   const seamsU = baseSeams({ fs: stale.fs, execFile: execUnexpected.execFile });
   await assert.rejects(() => installLoginLaunch(seamsU), /bootout|launchctl/i);
+});
+
+test("repeated install with an unchanged plist boots out the loaded agent before bootstrap (B11)", async () => {
+  const state = makeFs({
+    files: new Map<string, string | Buffer>([
+      [path.join("/workspace/token-usage-dashboard", "package.json"), "{}"],
+      [path.join("/workspace/token-usage-dashboard", "scripts", "start-widget.cjs"), "require()"],
+      ["/opt/node/bin/node", ""],
+    ]),
+    dirs: new Set<string>(["/workspace/token-usage-dashboard", "/workspace/token-usage-dashboard/scripts"]),
+  });
+  const exec = makeExecFile([]);
+  const seams = baseSeams({ fs: state.fs, execFile: exec.execFile });
+  state.files.set(
+    plistPath(seams),
+    buildPlistXml({
+      nodeBin: seams.nodeBin,
+      launcher: seams.launcher,
+      checkout: seams.checkout,
+      logDir: seams.logDir,
+      label: "com.token-usage-dashboard.widget",
+    }),
+  );
+  const result = await installLoginLaunch(seams);
+  assert.equal(result.kind, "installed");
+  assert.deepEqual(
+    exec.calls.map((c) => c.args),
+    [["bootout", "gui/501/com.token-usage-dashboard.widget"], ["bootstrap", "gui/501", plistPath(seams)]],
+  );
+});
+
+test("startup default execFile seam passes stderr, so a not-loaded bootout is recognized", async () => {
+  const seams = defaultSeams();
+  const got = await new Promise<{ err: unknown; stderr: string }>((resolve) => {
+    seams.execFile(
+      process.execPath,
+      ["-e", "process.stderr.write('Boot-out failed: 3: No such process'); process.exit(3)"],
+      (err, _stdout, stderr) => resolve({ err, stderr }),
+    );
+  });
+  assert.ok(got.err, "a nonzero exit is an error");
+  assert.match(got.stderr, /No such process/);
 });
 
 test("install preserves previous plist when rename fails and cleans temp file", async () => {
@@ -428,7 +471,7 @@ test("remove bootouts the agent when present (tolerating not-loaded/not-found) a
   assert.ok(state.files.has("/Users/test/Library/Logs/token-usage-dashboard/widget.out.log"));
   assert.deepEqual(
     exec.calls.map((c) => c.args),
-    [["bootout", "gui/501", "com.token-usage-dashboard.widget"]],
+    [["bootout", "gui/501/com.token-usage-dashboard.widget"]],
   );
 });
 
@@ -486,16 +529,35 @@ test("startup CLI Win32 install uses electron.exe --install-startup, never Power
   assert.deepEqual(logs, []);
 });
 
-test("startup CLI Win32 remove reports unmanaged shortcut without deleting", async () => {
-  const logs: string[] = [];
-  let spawned = false;
-  const fakeSpawn = (() => {
-    spawned = true;
-    return new EventEmitter() as unknown as ChildProcess;
-  }) as unknown as SpawnFn;
-  await dispatch("remove", "win32", {} as LoginLaunchSeams, fakeSpawn, (m) => logs.push(m));
-  assert.equal(spawned, false);
-  assert.match(logs.join(" "), /not managed/i);
+test("startup CLI Win32 remove deletes the Startup shortcut and tolerates a missing one (CLI-8)", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const appData = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-appdata-"));
+  const startupDir = path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+  const lnk = path.join(startupDir, "Token Usage Widget.lnk");
+  fs.mkdirSync(startupDir, { recursive: true });
+  fs.writeFileSync(lnk, "");
+  const prev = process.env.APPDATA;
+  process.env.APPDATA = appData;
+  try {
+    const logs: string[] = [];
+    let spawned = false;
+    const fakeSpawn = (() => {
+      spawned = true;
+      return new EventEmitter() as unknown as ChildProcess;
+    }) as unknown as SpawnFn;
+    await dispatch("remove", "win32", {} as LoginLaunchSeams, fakeSpawn, (m) => logs.push(m));
+    assert.equal(fs.existsSync(lnk), false, "the Startup shortcut is gone");
+    // Already gone: no error.
+    await dispatch("remove", "win32", {} as LoginLaunchSeams, fakeSpawn, (m) => logs.push(m));
+    assert.equal(spawned, false);
+    assert.match(logs[0], /removed/i);
+    assert.match(logs[1], /not installed/i);
+  } finally {
+    if (prev === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = prev;
+    fs.rmSync(appData, { recursive: true, force: true });
+  }
 });
 
 test("startup CLI Darwin install plans to call installLoginLaunch via seams", async () => {

@@ -144,7 +144,12 @@ function notLoadedLike(err: NodeJS.ErrnoException | null, stderr: string): boole
   if (!err) return false;
   if (err.code === "ENOENT") return true;
   const text = `${err.message} ${stderr}`.toLowerCase();
-  return text.includes("not loaded") || text.includes("no such") || text.includes("not found");
+  return (
+    text.includes("not loaded") ||
+    text.includes("no such") ||
+    text.includes("not found") ||
+    text.includes("could not find")
+  );
 }
 
 function execFileP(seams: LoginLaunchSeams, cmd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -161,11 +166,12 @@ function execFileP(seams: LoginLaunchSeams, cmd: string, args: string[]): Promis
 
 /**
  * Bootout the existing agent, tolerating the expected "not loaded" outcome.
- * Rejects on any unexpected launchctl error.
+ * Rejects on any unexpected launchctl error. Use the service target
+ * `gui/<uid>/<label>`: after `gui/<uid>`, launchctl reads a bare word as a plist path.
  */
 async function bootoutAgent(seams: LoginLaunchSeams): Promise<void> {
   try {
-    await execFileP(seams, "launchctl", ["bootout", `gui/${seams.uid}`, MANAGED_LABEL]);
+    await execFileP(seams, "launchctl", ["bootout", `gui/${seams.uid}/${MANAGED_LABEL}`]);
   } catch (e) {
     const { err, stderr } = e as { err: NodeJS.ErrnoException; stderr: string };
     if (notLoadedLike(err, stderr)) return;
@@ -209,15 +215,12 @@ export async function installLoginLaunch(seams: LoginLaunchSeams): Promise<Login
     throw new Error(`Failed to write plist: ${msg}`);
   }
 
-  // Plist is now the new definition. Bootout any previously-loaded agent so
-  // launchctl does not keep the old service running. not-loaded is tolerated
-  // on first install (existing === null).
-  if (needsRefresh) {
-    await bootoutAgent(seams);
-  }
+  // Plist is now the new definition. Always bootout first: bootstrap fails
+  // when the agent is already loaded, also when the plist did not change.
+  // not-loaded is tolerated (first install, or after a logout).
+  await bootoutAgent(seams);
 
-  // Bootstrap the new plist. Idempotent installs that did not change content
-  // skip bootout but still call bootstrap to ensure the agent is registered.
+  // Bootstrap the new plist.
   try {
     await execFileP(seams, "launchctl", ["bootstrap", `gui/${seams.uid}`, plistPath]);
   } catch (e) {

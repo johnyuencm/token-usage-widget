@@ -32,20 +32,22 @@ function resolveLaunchPlan({
   if (platform === "win32") {
     const commandLauncher = path.join(checkoutPath, "scripts", "start-widget.cmd");
     requirePath(fileSystem, commandLauncher, "Windows widget launcher");
-    // Do not pre-quote the path: Node's Windows spawn already quotes args with
-    // spaces. Manual quotes become \"...\" and cmd.exe looks for a literal
-    // '\"C:\...\start-widget.cmd\"' (not recognized). Do not pass /s either:
-    // it strips the quotes that Node adds, so a checkout path with a space
-    // fails ('C:\...\my' is not recognized).
+    // Quote the path ourselves and pass the command line verbatim, as Node does
+    // for `shell: true`: cmd /s strips only the outer pair, so the path stays
+    // quoted. Past failures: Node's own quoting covers only spaces, so a path
+    // with '&' split the command ('C:\...\tuw' is not recognized); manual
+    // quotes without verbatim became \"...\"; /s without verbatim stripped the
+    // quotes that Node adds, so a path with a space failed.
     return {
       platform,
       command: env.ComSpec || env.COMSPEC || "cmd.exe",
-      args: ["/d", "/c", commandLauncher],
+      args: ["/d", "/s", "/c", `""${commandLauncher}""`],
       options: {
         cwd: checkoutPath,
         env: { ...env },
         detached: false,
         stdio: "inherit",
+        windowsVerbatimArguments: true,
       },
       waitForExit: true,
     };

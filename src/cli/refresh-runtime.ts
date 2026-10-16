@@ -8,7 +8,12 @@ import path from "node:path";
 import { loadExisting, serverEndpointFromConfig } from "./provider-config.js";
 import { packageRoot } from "../config.js";
 
-export type FreePortFn = (port: number, host: string, log: (msg: string) => void) => unknown;
+export type FreePortFn = (
+  port: number,
+  host: string,
+  log: (msg: string) => void,
+  deps?: FreePortDeps,
+) => unknown;
 export type LaunchWidgetFn = () => Promise<unknown>;
 
 export interface RefreshRuntimeDeps {
@@ -22,6 +27,8 @@ export interface RefreshRuntimeDeps {
 export interface FreePortDeps {
   fetchImpl?: typeof fetch;
   exec?: (cmd: string, args: string[]) => unknown;
+  /** Config `server.lanToken`: a LAN bind answers 401 to a probe without it. */
+  lanToken?: string | null;
 }
 
 const SERVER_APP = "token-usage-widget";
@@ -37,11 +44,15 @@ export async function freePortWin32(
   log: (msg: string) => void = () => {},
   deps: FreePortDeps = {},
 ): Promise<boolean> {
-  const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host;
+  // A wildcard bind also listens on loopback; an IPv6 literal needs brackets in a URL.
+  const bare = host.replace(/^\[|\]$/g, "");
+  const probeHost =
+    bare === "0.0.0.0" || bare === "::" ? "127.0.0.1" : bare.includes(":") ? `[${bare}]` : bare;
   let body: { app?: unknown; pid?: unknown } | null = null;
   try {
     const res = await (deps.fetchImpl ?? fetch)(`http://${probeHost}:${Number(port)}/api/health`, {
       signal: AbortSignal.timeout(2000),
+      headers: deps.lanToken ? { authorization: `Bearer ${deps.lanToken}` } : undefined,
     });
     if (res.ok) body = (await res.json()) as { app?: unknown; pid?: unknown };
   } catch {
@@ -87,6 +98,10 @@ export async function refreshRuntime(deps: RefreshRuntimeDeps = {}): Promise<voi
   });
   const cfg = (deps.loadConfig ?? loadExisting)();
   const { host, port } = serverEndpointFromConfig(cfg);
+  // Same order as the server's loadConfig: env first, then config.json.
+  const savedToken = (cfg.server as { lanToken?: unknown } | undefined)?.lanToken;
+  const lanToken =
+    process.env.TUW_LAN_TOKEN?.trim() || (typeof savedToken === "string" ? savedToken.trim() : "") || null;
 
   if (platform !== "win32" && platform !== "darwin") {
     log(`Provider config updated. Restart the widget with: tuw`);
@@ -94,12 +109,13 @@ export async function refreshRuntime(deps: RefreshRuntimeDeps = {}): Promise<voi
   }
 
   const free = deps.freePort ?? (platform === "win32" ? freePortWin32 : () => {});
-  await free(port, host, log);
+  // true only when our running server was stopped; the widget then revives it.
+  const restarted = (await free(port, host, log, { lanToken })) === true;
 
   const launch = deps.launchWidget ?? defaultLaunchWidget;
   try {
     await launch();
-    log("Widget refreshed.");
+    log(restarted ? "Widget refreshed." : "Widget launched. No running usage server was restarted.");
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to refresh widget: ${reason}. Retry with: tuw`);
