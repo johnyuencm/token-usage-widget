@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -23,9 +25,17 @@ test("e2e fixture: dashboard + widget assets + usage shape", async () => {
   const nodeBin = resolveNodeBinary(process.env);
   const tsxCli = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
   const entry = path.join(ROOT, "src", "server.ts");
+  // A temp config: the test must never read or write the real user-data config.
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-e2e-"));
   const proc = spawn(nodeBin, [tsxCli, entry], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), USAGE_FIXTURE: "1", USAGE_FIXTURE_ALL: "1" },
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      USAGE_FIXTURE: "1",
+      USAGE_FIXTURE_ALL: "1",
+      TOKEN_USAGE_WIDGET_CONFIG: path.join(cfgDir, "config.json"),
+    },
     stdio: "ignore",
     windowsHide: true,
   });
@@ -89,5 +99,6 @@ test("e2e fixture: dashboard + widget assets + usage shape", async () => {
     assert.ok(cursor.billing.resetsAtIso);
   } finally {
     proc.kill();
+    fs.rmSync(cfgDir, { recursive: true, force: true });
   }
 });

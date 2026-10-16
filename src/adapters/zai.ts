@@ -26,6 +26,14 @@ function mapQuota(body: unknown): Record<WindowId, WindowUsage> {
     if (name.includes("session") || name.includes("5") || name.includes("token")) id = "five_hour";
     else if (name.includes("week")) id = "week";
     else if (name.includes("month")) id = "month";
+    const prev = windows.five_hour;
+    if (id === "five_hour" && prev.status === "ok" && prev.resetsAtIso && resetsAtIso && windows.week.status !== "ok") {
+      // A second 5h-like entry (e.g. a weekly TOKENS_LIMIT): the later reset is the week.
+      const next = okWindow(used, resetsAtIso);
+      if (resetsAtIso > prev.resetsAtIso) windows.week = next;
+      else [windows.five_hour, windows.week] = [next, prev];
+      continue;
+    }
     if (id) windows[id] = okWindow(used, resetsAtIso);
   }
   return windows;

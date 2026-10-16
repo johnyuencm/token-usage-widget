@@ -27,6 +27,7 @@ export interface CursorPeriodUsage {
     totalSpend?: number;
     includedSpend?: number;
     limit?: number;
+    remainingBonus?: boolean;
     bonusTooltip?: string;
   };
   displayMessage?: string;
@@ -47,8 +48,10 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
+/** Round like the Cursor bill, but 99.6% used is 99, not a full 100. */
 function roundPct(n: number): number {
-  return Math.round(n);
+  const r = Math.round(n);
+  return n < 100 && r === 100 ? 99 : r;
 }
 
 function clampPct(n: number): number {
@@ -107,10 +110,13 @@ export function mapCursorPeriod(period: CursorPeriodUsage | null | undefined): R
   return windows;
 }
 
+const LIMIT_HIT_RE = /hit your usage limit/i;
+
+/** limitHit: Cursor says so, or spend reached the limit with no bonus left. */
 export function buildCursorBilling(
   period: CursorPeriodUsage | null | undefined,
   membership: string | null | undefined,
-): CursorBillingBreakdown {
+): CursorBillingBreakdown & { limitHit: boolean } {
   const plan = period?.planUsage;
   const total =
     typeof plan?.totalPercentUsed === "number" && Number.isFinite(plan.totalPercentUsed)
@@ -147,6 +153,13 @@ export function buildCursorBilling(
         ? `Additional usage beyond limits consumes on-demand spend. Your plan includes at least $${includedUsd} of API usage.`
         : "Additional usage beyond limits consumes on-demand spend.",
     displayMessage: period?.displayMessage,
+    limitHit:
+      LIMIT_HIT_RE.test(period?.displayMessage ?? "") ||
+      (typeof plan?.totalSpend === "number" &&
+        typeof plan.limit === "number" &&
+        plan.limit > 0 &&
+        plan.totalSpend >= plan.limit &&
+        plan.remainingBonus === false),
   };
 }
 

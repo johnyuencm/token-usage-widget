@@ -3,8 +3,13 @@ import { resolvePollIntervalSec } from "../ui-settings.js";
 import type { ProviderId, ProviderUsage } from "../types.js";
 import { fetchProvider } from "./registry.js";
 
-const cache = new Map<ProviderId, { fetchedAtMs: number; usage: ProviderUsage }>();
+/** `errorRetry`: good data kept after one error; it expires after ERROR_RETRY_MS. */
+const cache = new Map<ProviderId, { fetchedAtMs: number; usage: ProviderUsage; errorRetry?: boolean }>();
 const inflight = new Map<ProviderId, Promise<ProviderUsage>>();
+
+/** A widget tick can arrive a little early; without a margin it gets data one period old. */
+const TICK_MARGIN_MS = 5_000;
+const ERROR_RETRY_MS = 30_000;
 
 export function resetPollCache(): void {
   cache.clear();
@@ -13,9 +18,11 @@ export function resetPollCache(): void {
 
 export async function fetchProviderThrottled(id: ProviderId, cfg: Config): Promise<ProviderUsage> {
   const minMs = resolvePollIntervalSec(id, cfg.ui) * 1000;
+  const ttlMs = Math.max(minMs - TICK_MARGIN_MS, minMs / 2);
+  const retryMs = Math.min(ERROR_RETRY_MS, ttlMs);
   const now = Date.now();
   const hit = cache.get(id);
-  if (hit && now - hit.fetchedAtMs < minMs) {
+  if (hit && now - hit.fetchedAtMs < (hit.errorRetry ? retryMs : ttlMs)) {
     // Keep the original fetchedAt so cached data does not show as fresh.
     return hit.usage;
   }
@@ -26,11 +33,19 @@ export async function fetchProviderThrottled(id: ProviderId, cfg: Config): Promi
   const startedAt = now;
   const p = fetchProvider(id, cfg)
     .then((usage) => {
+      const prev = cache.get(id);
+      if (usage.error && prev && !prev.usage.error && !prev.errorRetry) {
+        // One error keeps the last good data (its own fetchedAt shows its age) and
+        // retries soon. A second error in a row shows, so a lasting failure is not hidden.
+        cache.set(id, { fetchedAtMs: startedAt, usage: prev.usage, errorRetry: true });
+        return prev.usage;
+      }
       cache.set(id, { fetchedAtMs: startedAt, usage });
       return usage;
     })
     .finally(() => {
-      inflight.delete(id);
+      // A reset mid-fetch can start a newer fetch; do not delete its entry.
+      if (inflight.get(id) === p) inflight.delete(id);
     });
   inflight.set(id, p);
   return p;

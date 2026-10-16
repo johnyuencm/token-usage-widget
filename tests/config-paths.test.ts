@@ -71,7 +71,7 @@ test("migrateCwdConfigIfNeeded copies cwd config once into user data", async () 
   delete process.env.TOKEN_USAGE_WIDGET_CONFIG;
 
   const cwdConfig = path.join(cwd, "config.json");
-  fs.writeFileSync(cwdConfig, '{"providers":{"openai":true}}\n', "utf8");
+  fs.writeFileSync(cwdConfig, '{"providers":{"openai":true},"opencode":{"go":{"authCookie":"old"}}}\n', "utf8");
 
   const prevCwd = process.cwd();
   const PLATFORM = Object.getOwnPropertyDescriptor(process, "platform");
@@ -82,11 +82,14 @@ test("migrateCwdConfigIfNeeded copies cwd config once into user data", async () 
     const dest = mod.configPath();
     assert.equal(fs.existsSync(dest), false);
     mod.migrateCwdConfigIfNeeded();
-    assert.equal(fs.existsSync(dest), true);
-    assert.equal(fs.readFileSync(dest, "utf8"), '{"providers":{"openai":true}}\n');
+    assert.deepEqual(JSON.parse(fs.readFileSync(dest, "utf8")), { providers: { openai: true } }, "B6: no opencode cookie");
     fs.writeFileSync(cwdConfig, '{"providers":{"openai":false}}\n', "utf8");
     mod.migrateCwdConfigIfNeeded();
-    assert.equal(fs.readFileSync(dest, "utf8"), '{"providers":{"openai":true}}\n');
+    assert.deepEqual(JSON.parse(fs.readFileSync(dest, "utf8")), { providers: { openai: true } });
+    // B6: a config that the user deletes must not come back from the checkout.
+    fs.rmSync(dest);
+    mod.migrateCwdConfigIfNeeded();
+    assert.equal(fs.existsSync(dest), false);
   } finally {
     process.chdir(prevCwd);
     if (PLATFORM) Object.defineProperty(process, "platform", PLATFORM);

@@ -78,7 +78,35 @@ function mapUsages(body: unknown): Record<WindowId, WindowUsage> {
       else if (k.includes("month")) apply("month", item);
     }
   }
+
+  // kimi-cli shape: { usage: <weekly summary>, limits: [{ window: { duration, timeUnit }, detail }] }.
+  // It fills only windows the shapes above left empty, so their results do not change.
+  const fill = (id: WindowId | null, item: unknown) => {
+    if (id && windows[id].status !== "ok" && item && typeof item === "object") {
+      apply(id, item as Record<string, unknown>);
+    }
+  };
+  if (Array.isArray(root.limits)) {
+    for (const raw of root.limits) {
+      if (!raw || typeof raw !== "object") continue;
+      const item = raw as Record<string, unknown>;
+      fill(limitWindowId(item.window), item.detail ?? item);
+    }
+  }
+  fill("week", root.usage);
   return windows;
+}
+
+/** kimi-cli window { duration: 300, timeUnit: "TIME_UNIT_MINUTE" } → five_hour. */
+function limitWindowId(window: unknown): WindowId | null {
+  if (!window || typeof window !== "object") return null;
+  const w = window as Record<string, unknown>;
+  const n = Number(w.duration);
+  const unit = String(w.timeUnit ?? "").toUpperCase();
+  const perUnit = unit.includes("MINUTE") ? 1 : unit.includes("HOUR") ? 60 : unit.includes("DAY") ? 1440 : NaN;
+  const minutes = n * perUnit;
+  if (!(minutes > 0)) return null;
+  return minutes <= 300 ? "five_hour" : minutes <= 7 * 1440 ? "week" : "month";
 }
 
 export async function fetchKimiUsage(cfg: Config): Promise<ProviderUsage> {

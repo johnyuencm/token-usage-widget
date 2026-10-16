@@ -35,6 +35,8 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
 
 async function gatherUsage(): Promise<UsageResponse> {
   const cfg = await loadConfig();
+  // A 500 with the message, not an empty list that reads as "No providers".
+  if (cfg.configError) throw new Error(cfg.configError);
   if (isFixtureMode()) {
     // Demo all providers only when explicitly requested (CI / screenshots).
     const allOn =
@@ -42,11 +44,13 @@ async function gatherUsage(): Promise<UsageResponse> {
     const flags: ProviderFlags = allOn
       ? (Object.fromEntries(ALL_PROVIDER_IDS.map((id) => [id, true])) as ProviderFlags)
       : cfg.providers;
-    return buildFixtureResponse(flags);
+    return { ...buildFixtureResponse(flags), ui: cfg.ui };
   }
   const providers = await fetchEnabledProvidersThrottled(cfg);
+  // The UI shows only this field: give the age of the oldest data, not the response time.
+  const times = providers.map((p) => Date.parse(p.fetchedAt)).filter(Number.isFinite);
   return {
-    fetchedAt: new Date().toISOString(),
+    fetchedAt: new Date(times.length ? Math.min(...times) : Date.now()).toISOString(),
     fixture: false,
     providers,
     ui: cfg.ui,

@@ -7,9 +7,17 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   root.TokenUsageCompact = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  function pct(v) {
+  /**
+   * Round like the vendor UIs, but never show full or empty early:
+   * 99.6% used reads "99%", and 0.4% left reads "1% left".
+   */
+  function pct(v, mode = "used") {
     if (v === null || v === undefined || Number.isNaN(Number(v))) return null;
-    return `${Math.round(Number(v))}%`;
+    const x = Number(v);
+    let n = Math.round(x);
+    if (mode === "remaining" && x > 0 && n === 0) n = 1;
+    if (mode !== "remaining" && x < 100 && n === 100) n = 99;
+    return `${n}%`;
   }
 
   function fmtApi() {
@@ -38,7 +46,8 @@
     if (!win || win.status !== "ok") return null;
     const raw = mode === "remaining" ? win.remainingPercent : win.usedPercent;
     if (raw === null || raw === undefined || Number.isNaN(Number(raw))) return null;
-    const base = `${label} ${pct(raw)}`;
+    // "left" marks remaining, so it does not read like the used % of other providers.
+    const base = mode === "remaining" ? `${label} ${pct(raw, mode)} left` : `${label} ${pct(raw)}`;
     const reset = shortReset(win.resetsAtIso, nowMs);
     return reset ? `${base} (${reset})` : base;
   }
@@ -117,10 +126,8 @@
           ? "cursor"
           : String(p.provider || "provider").toLowerCase();
 
-    if (p.error && p.provider !== "cursor") {
-      // Prefer window/balance lines when present; only collapse when empty.
-      if (!p.windows && !p.balance) return `${name}: ${compactErrorLabel(p.error)}`;
-    }
+    // Adapters always send windows, so show the error where "NA" would go.
+    const na = p.error ? compactErrorLabel(p.error) : "NA";
 
     if (p.provider === "cursor") {
       const b = p.billing;
@@ -140,13 +147,14 @@
       if (show.api && b.apiPercentUsed !== null && b.apiPercentUsed !== undefined) {
         parts.push(`API ${pct(b.apiPercentUsed)}`);
       }
-      if (!parts.length) return `${name}: NA`;
+      if (b.limitHit) parts.unshift(parts.length ? "limit hit," : "limit hit");
+      if (!parts.length) return `${name}: ${na}`;
       return withCycleReset(`${name}: ${parts.join(" ")}`, b.resetsAtIso, nowMs);
     }
 
     if (p.provider === "openrouter") {
       const rem = money(p.balance?.remaining);
-      const base = rem !== null ? `openrouter: $${rem} left` : "openrouter: NA";
+      const base = rem !== null ? `openrouter: $${rem} left` : `openrouter: ${na}`;
       return withCycleReset(base, p.balance?.resetsAtIso, nowMs);
     }
 
@@ -163,10 +171,7 @@
         const spend = usdSpendBit(p.balance);
         if (spend) bits.push(spend);
       }
-      if (!bits.length) {
-        if (p.error) return `${name}: ${compactErrorLabel(p.error)}`;
-        return `${name}: NA`;
-      }
+      if (!bits.length) return `${name}: ${na}`;
       return withCycleReset(`${name}: ${bits.join(", ")}`, p.balance?.resetsAtIso, nowMs);
     }
 
@@ -177,7 +182,7 @@
       }
       const mPart = winPart("month", p.windows?.month, "used", nowMs);
       if (mPart) return `grok: ${mPart}`;
-      return "grok: NA";
+      return `grok: ${na}`;
     }
 
     // Codex Analytics shows "% remaining" — match that number for openai.
@@ -189,10 +194,7 @@
     ];
 
     const bits = windowBits(labels, p, mode, nowMs);
-    if (!bits.length) {
-      if (p.error) return `${name}: ${compactErrorLabel(p.error)}`;
-      return `${name}: NA`;
-    }
+    if (!bits.length) return `${name}: ${na}`;
     return `${name}: ${bits.join(", ")}`;
   }
 

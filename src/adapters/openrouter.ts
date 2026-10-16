@@ -4,6 +4,11 @@ import { unavailableAll } from "../types.js";
 
 /** Official OpenRouter credits API → prepaid USD balance. */
 
+/** Number(null) and Number("") are 0. Read them as missing, not as 0. */
+function num(v: unknown): number {
+  return v === null || v === "" ? NaN : Number(v);
+}
+
 export async function fetchOpenRouterUsage(cfg: Config): Promise<ProviderUsage> {
   const fetchedAt = new Date().toISOString();
   const key = cfg.openrouter.apiKey;
@@ -39,8 +44,8 @@ export async function fetchOpenRouterUsage(cfg: Config): Promise<ProviderUsage> 
       total_usage?: number;
     };
     const data = json.data ?? json;
-    const total = Number(data.total_credits);
-    const used = Number(data.total_usage);
+    const total = num(data.total_credits);
+    const used = num(data.total_usage);
     const remaining =
       Number.isFinite(total) && Number.isFinite(used) ? Math.max(0, total - used) : null;
 

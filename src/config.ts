@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -28,18 +28,31 @@ export function userDataDir(): string {
 }
 
 /**
- * One-time copy of checkout `./config.json` into user-data when missing.
- * No-ops when TOKEN_USAGE_WIDGET_CONFIG is set or destination already exists.
+ * One-time copy of checkout `./config.json` into user-data when no user config
+ * ever existed. No-ops when TOKEN_USAGE_WIDGET_CONFIG is set. A marker file
+ * records "done": Electron creates the same folder, so the folder says nothing,
+ * and a user config that the user deletes must not come back.
  */
 export function migrateCwdConfigIfNeeded(): void {
   if (process.env.TOKEN_USAGE_WIDGET_CONFIG?.trim()) return;
-  const dest = path.join(userDataDir(), "config.json");
-  if (existsSync(dest)) return;
-  const cwdConfig = path.join(process.cwd(), "config.json");
-  if (!existsSync(cwdConfig)) return;
-  if (path.resolve(cwdConfig) === path.resolve(dest)) return;
-  mkdirSync(userDataDir(), { recursive: true });
-  copyFileSync(cwdConfig, dest);
+  const dir = userDataDir();
+  const dest = path.join(dir, "config.json");
+  const marker = path.join(dir, ".cwd-config-migrated");
+  if (existsSync(marker)) return;
+  if (!existsSync(dest)) {
+    const cwdConfig = path.join(process.cwd(), "config.json");
+    if (!existsSync(cwdConfig) || path.resolve(cwdConfig) === path.resolve(dest)) return;
+    let data: Record<string, unknown>;
+    try {
+      // Parse + write drops removed fields (the old opencode cookie) and sets mode 0600.
+      data = parseConfigText(readFileSync(cwdConfig, "utf8"), cwdConfig);
+    } catch {
+      return; // A bad legacy file is not copied; the user config stays absent.
+    }
+    mkdirSync(dir, { recursive: true });
+    writeConfigFile(dest, data);
+  }
+  writeFileSync(marker, "");
 }
 
 export function ensureConfigDir(): void {
@@ -66,6 +79,8 @@ export interface Config {
     lanToken: string | null;
   };
   ui: UiSettings;
+  /** Set when config.json exists but cannot be read or parsed; the API shows it. */
+  configError?: string;
 }
 
 /** Cold start: show nothing until `npm run setup` (or explicit config.providers). */
@@ -176,8 +191,10 @@ export function writeConfigFile(p: string, data: Record<string, unknown>): void 
 export async function loadConfig(): Promise<Config> {
   migrateCwdConfigIfNeeded();
   const cfg = defaultConfig();
-  const envPort = process.env.PORT;
-  if (envPort && Number.isFinite(Number(envPort))) cfg.server.port = Number(envPort);
+  // Only a real port wins over the config: "abc", " " (Number is 0) and "0" are ignored.
+  const envPortNum = Number(process.env.PORT?.trim() || NaN);
+  const envPort = Number.isInteger(envPortNum) && envPortNum > 0 && envPortNum < 65536 ? envPortNum : undefined;
+  if (envPort !== undefined) cfg.server.port = envPort;
 
   // config.example.json is documentation only: merging it would turn on
   // openai/cursor before setup. Every provider stays off until config.json says so.
@@ -202,13 +219,15 @@ export async function loadConfig(): Promise<Config> {
 
       const srv = parsed.server as Record<string, unknown> | undefined;
       if (srv) {
-        if (typeof srv.port === "number" && !envPort) cfg.server.port = srv.port;
+        if (typeof srv.port === "number" && envPort === undefined) cfg.server.port = srv.port;
         if (typeof srv.host === "string") cfg.server.host = srv.host;
         cfg.server.lanToken = strOrNull(srv.lanToken) ?? cfg.server.lanToken;
       }
       if (parsed.ui) cfg.ui = mergeUiSettings(parsed.ui);
     } catch {
-      // ignore malformed config files, keep defaults
+      // Keep defaults so the server still starts, but show the error on the API.
+      // No path in the message: a LAN caller must not see the home folder layout.
+      cfg.configError = "config.json cannot be read or is not valid JSON; fix or delete it";
     }
   }
 

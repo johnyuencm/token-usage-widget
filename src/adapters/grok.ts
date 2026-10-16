@@ -5,6 +5,11 @@ import type { Config } from "../config.js";
 import type { ProviderUsage } from "../types.js";
 import { unavailableAll, okWindow } from "../types.js";
 
+/** Number(null) and Number("") are 0. Read them as missing, not as 0. */
+function num(v: unknown): number {
+  return v === null || v === "" ? NaN : Number(v);
+}
+
 function readGrokToken(cfg: Config): string | null {
   if (cfg.grok.oauthToken) return cfg.grok.oauthToken;
   const p = path.join(os.homedir(), ".grok", "auth.json");
@@ -54,16 +59,16 @@ export async function fetchGrokUsage(cfg: Config): Promise<ProviderUsage> {
       };
     }
     const body = (await res.json()) as Record<string, unknown>;
-    const used = Number(body.credits_used ?? body.used ?? body.usage);
-    const limit = Number(body.credits_limit ?? body.limit ?? body.total);
-    const remaining = Number(body.credits_remaining ?? body.remaining);
+    const used = num(body.credits_used ?? body.used ?? body.usage);
+    const limit = num(body.credits_limit ?? body.limit ?? body.total);
+    const remaining = num(body.credits_remaining ?? body.remaining);
     let usedPct: number | null = null;
     if (Number.isFinite(used) && Number.isFinite(limit) && limit > 0) {
       usedPct = Math.min(100, Math.max(0, (used / limit) * 100));
     } else if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
       usedPct = Math.min(100, Math.max(0, ((limit - remaining) / limit) * 100));
-    } else if (Number.isFinite(Number(body.usagePercent))) {
-      usedPct = Number(body.usagePercent);
+    } else if (Number.isFinite(num(body.usagePercent))) {
+      usedPct = num(body.usagePercent);
     }
 
     const reset =

@@ -55,6 +55,12 @@ function clampIntervalSec(n: number): number {
   return Math.min(MAX_INTERVAL_SEC, Math.max(MIN_INTERVAL_SEC, Math.round(n)));
 }
 
+/** Seconds from a positive finite number, clamped. 0, null, "" and NaN mean "not set". */
+function positiveIntervalSec(v: unknown): number | undefined {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? clampIntervalSec(n) : undefined;
+}
+
 function boolOr(v: unknown, fallback: boolean): boolean {
   return typeof v === "boolean" ? v : fallback;
 }
@@ -86,8 +92,8 @@ function mergePollIntervals(base: Partial<Record<ProviderId, number>>, incoming:
   if (!incoming || typeof incoming !== "object") return out;
   const src = incoming as Record<string, unknown>;
   for (const id of ALL_PROVIDER_IDS) {
-    const val = src[id];
-    if (typeof val === "number" && Number.isFinite(val)) out[id] = clampIntervalSec(val);
+    const sec = typeof src[id] === "number" ? positiveIntervalSec(src[id]) : undefined;
+    if (sec !== undefined) out[id] = sec;
   }
   return out;
 }
@@ -98,7 +104,7 @@ export function mergeUiSettings(incoming: unknown): UiSettings {
   const src = incoming as Record<string, unknown>;
   const display = (src.display as Record<string, unknown> | undefined) ?? {};
   return {
-    refreshIntervalSec: clampIntervalSec(Number(src.refreshIntervalSec ?? DEFAULT_UI.refreshIntervalSec)),
+    refreshIntervalSec: positiveIntervalSec(src.refreshIntervalSec) ?? DEFAULT_UI.refreshIntervalSec,
     pollIntervalSec: mergePollIntervals(DEFAULT_UI.pollIntervalSec, src.pollIntervalSec),
     display: {
       claude: mergeClaudeDisplay(display.claude),
@@ -128,21 +134,27 @@ export function cursorBillingFields(display: CursorDisplaySettings): CursorBilli
   return out;
 }
 
+function sentFlags<T>(src: unknown): Partial<T> | undefined {
+  if (!src || typeof src !== "object") return undefined;
+  return Object.fromEntries(Object.entries(src).filter(([, v]) => typeof v === "boolean")) as Partial<T>;
+}
+
 export function parseUiPatch(body: unknown): Partial<UiSettings> {
   if (!body || typeof body !== "object") return {};
   const src = body as Record<string, unknown>;
   const patch: Partial<UiSettings> = {};
-  if (src.refreshIntervalSec !== undefined) {
-    patch.refreshIntervalSec = clampIntervalSec(Number(src.refreshIntervalSec));
-  }
+  // A value that is not a positive number (blank select, null) keeps the current one.
+  const refresh = positiveIntervalSec(src.refreshIntervalSec);
+  if (refresh !== undefined) patch.refreshIntervalSec = refresh;
   if (src.pollIntervalSec !== undefined) {
     patch.pollIntervalSec = mergePollIntervals({}, src.pollIntervalSec);
   }
   if (src.display !== undefined && typeof src.display === "object") {
     const d = src.display as Record<string, unknown>;
+    // Keep only the flags sent, so applyUiPatch keeps the current siblings.
     patch.display = {
-      claude: d.claude !== undefined ? mergeClaudeDisplay(d.claude) : undefined,
-      cursor: d.cursor !== undefined ? mergeCursorDisplay(d.cursor) : undefined,
+      claude: sentFlags<ClaudeDisplaySettings>(d.claude),
+      cursor: sentFlags<CursorDisplaySettings>(d.cursor),
     } as UiSettings["display"];
   }
   return patch;
@@ -153,8 +165,8 @@ export function applyUiPatch(current: UiSettings, patch: Partial<UiSettings>): U
     refreshIntervalSec: patch.refreshIntervalSec ?? current.refreshIntervalSec,
     pollIntervalSec: { ...current.pollIntervalSec, ...(patch.pollIntervalSec ?? {}) },
     display: {
-      claude: patch.display?.claude ?? current.display.claude,
-      cursor: patch.display?.cursor ?? current.display.cursor,
+      claude: { ...current.display.claude, ...patch.display?.claude },
+      cursor: { ...current.display.cursor, ...patch.display?.cursor },
     },
   });
 }

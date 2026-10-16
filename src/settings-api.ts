@@ -6,7 +6,6 @@ import {
   parseUiPatch,
   type UiSettings,
 } from "./ui-settings.js";
-import { resetPollCache } from "./providers/poll-cache.js";
 
 export interface PublicSettingsResponse {
   ui: UiSettings;
@@ -19,6 +18,7 @@ export async function getPublicSettings(
   options: { includeConfigPath?: boolean } = {},
 ): Promise<PublicSettingsResponse> {
   const cfg = await loadConfig();
+  if (cfg.configError) throw new Error(cfg.configError);
   const body: PublicSettingsResponse = {
     ui: cfg.ui,
     providers: cfg.providers,
@@ -33,7 +33,7 @@ export async function saveUiSettingsPatch(body: unknown): Promise<UiSettings> {
   const current = mergeUiSettings(existing.ui);
   const patch = parseUiPatch(body);
   const next = applyUiPatch(current, patch);
+  // No poll cache reset: it called every provider again and skipped the Claude 300 s guard.
   writeConfig({ ...existing, ui: next });
-  resetPollCache();
   return next;
 }

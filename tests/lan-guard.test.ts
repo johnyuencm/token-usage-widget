@@ -13,8 +13,10 @@ import {
 } from "../src/server-auth.js";
 import { getPublicSettings } from "../src/settings-api.js";
 import { createRequestHandler } from "../src/server.js";
+import { __test as pollTest } from "../src/providers/poll-cache.js";
+import { unavailableAll } from "../src/types.js";
 
-const ENV_KEYS = ["TOKEN_USAGE_WIDGET_CONFIG", "TUW_LAN_TOKEN"] as const;
+const ENV_KEYS = ["TOKEN_USAGE_WIDGET_CONFIG", "TUW_LAN_TOKEN", "USAGE_FIXTURE", "USAGE_FIXTURE_ALL"] as const;
 const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 const tempDirs: string[] = [];
 
@@ -99,6 +101,7 @@ test("LAN bind keeps loopback callers (the local widget) working without a token
 });
 
 test("handler returns 401 for a tokenless LAN request and 200 for loopback", async () => {
+  tempConfigFile({}); // never read or write the real user-data config
   const token = generateLanToken();
   const handler = createRequestHandler({ lanToken: token, loopbackBind: false, bindHost: "0.0.0.0" });
 
@@ -261,9 +264,44 @@ test("bad config JSON gives a JSON error on settings and usage, not a crash", as
   const put = await rawRequest(port, "PUT /api/settings", "127.0.0.1");
   assert.ok(put.status >= 400 && put.status < 600, String(put.status));
   assert.ok(JSON.parse(put.body).error);
-  const usage = await rawRequest(port, "GET /api/usage", "127.0.0.1");
-  assert.ok(usage.status === 200 || usage.status === 500, String(usage.status));
-  JSON.parse(usage.body);
+  // B4: the parse error shows, not an empty "No providers" list.
+  for (const route of ["GET /api/usage", "GET /api/settings"]) {
+    const res = await rawRequest(port, route, "127.0.0.1");
+    assert.equal(res.status, 500, route);
+    assert.match(JSON.parse(res.body).error, /not valid JSON/, route);
+  }
   assert.equal(fs.readFileSync(cfgPath, "utf8"), "{ not json");
   assert.equal((await rawRequest(port, "GET /api/health", "127.0.0.1")).status, 200);
+});
+
+function tempConfigFile(body: unknown): void {
+  stashEnv();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-lan-"));
+  tempDirs.push(dir);
+  const cfgPath = path.join(dir, "config.json");
+  fs.writeFileSync(cfgPath, JSON.stringify(body));
+  process.env.TOKEN_USAGE_WIDGET_CONFIG = cfgPath;
+}
+
+test("usage fetchedAt is the oldest provider fetchedAt, not the response time (B1)", async (t) => {
+  tempConfigFile({ providers: { openrouter: true } });
+  delete process.env.USAGE_FIXTURE;
+  pollTest.resetPollCache();
+  t.after(() => pollTest.resetPollCache());
+  pollTest.cache.set("openrouter", {
+    fetchedAtMs: Date.now(),
+    usage: { provider: "openrouter", label: "OpenRouter", windows: unavailableAll("cached"), fetchedAt: "2026-08-06T00:00:00.000Z" },
+  });
+  const port = await startServer(t);
+  const usage = JSON.parse((await rawRequest(port, "GET /api/usage", "127.0.0.1")).body);
+  assert.equal(usage.fetchedAt, "2026-08-06T00:00:00.000Z", "cached data must not show as fresh");
+});
+
+test("fixture usage carries the ui settings (B9)", async (t) => {
+  tempConfigFile({ ui: { refreshIntervalSec: 120 } });
+  process.env.USAGE_FIXTURE = "1";
+  const port = await startServer(t);
+  const usage = JSON.parse((await rawRequest(port, "GET /api/usage", "127.0.0.1")).body);
+  assert.equal(usage.fixture, true);
+  assert.equal(usage.ui?.refreshIntervalSec, 120);
 });

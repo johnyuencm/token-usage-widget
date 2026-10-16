@@ -38,7 +38,7 @@
   }
 
   /**
-   * Compact countdown for the corner widget (e.g. "3d 5h", "2h 15m", "now").
+   * Compact countdown for the corner widget (e.g. "3d 5h", "2h 15m", "<1m", "now").
    * @param {string | null | undefined} iso
    * @param {number} [nowMs]
    * @returns {string}
@@ -49,6 +49,7 @@
     if (Number.isNaN(t)) return "";
     const diff = t - nowMs;
     if (diff <= 0) return "now";
+    if (diff < 60000) return "<1m";
 
     const totalMin = Math.max(0, Math.round(diff / 60000));
     const days = Math.floor(totalMin / (60 * 24));

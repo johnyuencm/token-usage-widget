@@ -16,6 +16,7 @@ import { copySqliteSidecars, sqliteScalar } from "../src/sqlite-scalar.js";
 import { __test as kimiTest } from "../src/adapters/kimi.js";
 import { __test as zaiTest } from "../src/adapters/zai.js";
 import { fetchOpenRouterUsage } from "../src/adapters/openrouter.js";
+import { fetchGrokUsage } from "../src/adapters/grok.js";
 import type { Config } from "../src/config.js";
 import { DEFAULT_ENABLED } from "../src/config.js";
 import { DEFAULT_UI } from "../src/ui-settings.js";
@@ -614,6 +615,74 @@ test("poll cache serves cached provider payload within interval", async (t) => {
   assert.equal(calls, 0);
 });
 
+/** OpenRouter config (60 s poll) and a fetch stub; `reply` gives the HTTP status per call. */
+function openrouterPoll(t: { after(fn: () => void): void }, reply: (call: number) => Promise<number> | number) {
+  pollTest.resetPollCache();
+  t.after(() => pollTest.resetPollCache());
+  const counter = { calls: 0 };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    const status = await reply(++counter.calls);
+    return new Response(JSON.stringify({ data: { total_credits: 10, total_usage: 4 } }), { status });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const cfg = bareConfig({
+    providers: { ...DEFAULT_ENABLED, openrouter: true },
+    openrouter: { apiKey: "test-key" },
+    ui: { ...DEFAULT_UI, refreshIntervalSec: 60, pollIntervalSec: {} },
+  });
+  const good = {
+    provider: "openrouter" as const,
+    label: "OpenRouter",
+    windows: unavailableAll("cached"),
+    balance: { currency: "USD" as const, remaining: 1 },
+    fetchedAt: "2026-08-06T00:00:00.000Z",
+  };
+  return { cfg, counter, good };
+}
+
+test("poll cache refetches a tick that arrives a little early (B2)", async (t) => {
+  const { cfg, counter, good } = openrouterPoll(t, () => 200);
+  // The widget ticks every 60 s; this tick comes 1 s early.
+  pollTest.cache.set("openrouter", { fetchedAtMs: Date.now() - 59_000, usage: good });
+  const out = await fetchProviderThrottled("openrouter", cfg);
+  assert.equal(counter.calls, 1, "a tick 1 s early must not get data one period old");
+  assert.equal(out.balance?.remaining, 6);
+});
+
+test("poll cache keeps the last good entry after one error and retries soon (B8)", async (t) => {
+  const { cfg, counter, good } = openrouterPoll(t, () => 500);
+  pollTest.cache.set("openrouter", { fetchedAtMs: Date.now() - 61_000, usage: good });
+
+  const first = await fetchProviderThrottled("openrouter", cfg);
+  assert.equal(counter.calls, 1);
+  assert.equal(first.error, undefined, "one error must not replace good data");
+  assert.equal(first.fetchedAt, good.fetchedAt, "kept data keeps its own age");
+
+  // 30 s later (not a full 60 s poll period) the provider is called again.
+  pollTest.cache.get("openrouter")!.fetchedAtMs -= 30_000;
+  const second = await fetchProviderThrottled("openrouter", cfg);
+  assert.equal(counter.calls, 2);
+  assert.match(second.error ?? "", /HTTP 500/, "a second error in a row shows");
+});
+
+test("an old fetch does not delete a newer inflight entry (B5)", async (t) => {
+  const gates: Array<() => void> = [];
+  const { cfg } = openrouterPoll(t, () => new Promise<number>((r) => gates.push(() => r(200))));
+  const a = fetchProviderThrottled("openrouter", cfg);
+  pollTest.resetPollCache();
+  const b = fetchProviderThrottled("openrouter", cfg);
+  assert.equal(gates.length, 2);
+  gates[0]();
+  await a;
+  assert.equal(pollTest.inflight.has("openrouter"), true, "the newer fetch is still in flight");
+  gates[1]();
+  await b;
+  assert.equal(pollTest.inflight.has("openrouter"), false);
+});
+
 test("kimi mapUsages maps session + week array entries", () => {
   const windows = kimiTest.mapUsages({
     data: [
@@ -689,4 +758,153 @@ test("widget-compact claude shows dollar spend and hides NA windows", () => {
     balance: { currency: "USD", used: 3.64, total: 9, remaining: 5.36 },
   });
   assert.equal(line, "claude: $3.64/$9.00 (40%)");
+});
+
+test("claude serves cached data only while fresh, drops passed windows and marks it stale (A2)", async (t) => {
+  claudeTest.resetCache();
+  t.after(() => claudeTest.resetCache());
+  let now = Date.parse("2026-10-16T12:00:00.000Z");
+  claudeTest.setNow(() => now);
+
+  let reply: "ok" | "503" | "throw" = "ok";
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    if (reply === "throw") throw new Error("fetch failed");
+    if (reply === "503") return new Response("{}", { status: 503 });
+    return new Response(
+      JSON.stringify({
+        five_hour: { utilization: 95, resets_at: "2026-10-16T12:20:00.000Z" },
+        seven_day: { utilization: 40, resets_at: "2026-10-20T00:00:00.000Z" },
+      }),
+      { status: 200 },
+    );
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const cfg = bareConfig({ claude: { accessToken: "test-token" } });
+  const ok = await fetchClaudeUsage(cfg);
+  assert.equal(ok.error, undefined);
+
+  reply = "503";
+  now += 10 * 60_000;
+  const held = await fetchClaudeUsage(cfg);
+  assert.equal(held.windows.five_hour.usedPercent, 95);
+  assert.equal(held.error, "stale: Claude usage HTTP 503");
+  assert.equal(held.fetchedAt, ok.fetchedAt, "stale data must not look fresh");
+
+  reply = "throw";
+  now += 15 * 60_000;
+  const passed = await fetchClaudeUsage(cfg);
+  assert.equal(passed.windows.five_hour.status, "unavailable", "the 5h window reset 5 min ago");
+  assert.equal(passed.windows.week.usedPercent, 40);
+  assert.equal(passed.error, "stale: fetch failed");
+  assert.doesNotMatch(providerLine(passed), /95%/);
+
+  reply = "503";
+  now += 6 * 60_000;
+  const old = await fetchClaudeUsage(cfg);
+  assert.equal(old.windows.week.status, "unavailable", "a cache older than 30 min is not served");
+  assert.equal(old.error, "Claude usage HTTP 503");
+});
+
+test("claude maps only seven_day to Week, not an Opus or Sonnet sub-limit (A10)", () => {
+  const windows = claudeTest.mapOAuthUsage({
+    five_hour: { utilization: 10 },
+    seven_day: null,
+    seven_day_opus: { utilization: 0 },
+    seven_day_sonnet: { utilization: 88 },
+  });
+  assert.equal(windows.week.status, "unavailable");
+  const withWeek = claudeTest.mapOAuthUsage({
+    seven_day: { utilization: 61 },
+    seven_day_opus: { utilization: 3 },
+  });
+  assert.equal(withWeek.week.usedPercent, 61);
+});
+
+test("cursor billing flags a hit usage limit (A4)", () => {
+  const bill = (period: Parameters<typeof cursorTest.buildCursorBilling>[0]) =>
+    cursorTest.buildCursorBilling(period, "pro").limitHit;
+  assert.equal(bill({ displayMessage: "You've hit your usage limit", planUsage: { totalPercentUsed: 42 } }), true);
+  assert.equal(
+    bill({ planUsage: { totalPercentUsed: 42, totalSpend: 54570, limit: 7000, remainingBonus: false } }),
+    true,
+  );
+  assert.equal(
+    bill({ planUsage: { totalPercentUsed: 42, totalSpend: 54570, limit: 7000, remainingBonus: true } }),
+    false,
+  );
+  assert.equal(
+    bill({ planUsage: { totalPercentUsed: 42, totalSpend: 3000, limit: 7000, remainingBonus: false } }),
+    false,
+  );
+});
+
+test("cursor and claude percents round like the bill but never show full early (A7)", () => {
+  const billing = cursorTest.buildCursorBilling(
+    { planUsage: { totalPercentUsed: 99.6, autoPercentUsed: 12.86875, apiPercentUsed: 98.97 } },
+    "pro",
+  );
+  assert.equal(billing.totalPercentUsed, 99);
+  assert.equal(billing.remainingPercent, 1);
+  assert.equal(billing.autoPercentUsed, 13);
+  assert.equal(billing.apiPercentUsed, 99);
+  const spend = claudeTest.mapSpendBalance({
+    spend: {
+      percent: 99.6,
+      used: { amount_minor: 896, exponent: 2 },
+      limit: { amount_minor: 900, exponent: 2 },
+    },
+  });
+  assert.equal(spend?.label, "Spend limit - 99% used");
+});
+
+test("kimi mapUsages maps the kimi-cli usage + limits shape (A5)", () => {
+  const windows = kimiTest.mapUsages({
+    usage: { limit: "100", used: "25", remaining: "75", resetTime: "2026-10-20T00:00:00.000Z" },
+    limits: [
+      {
+        window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
+        detail: { limit: "100", remaining: "80", resetTime: "2026-10-16T15:00:00.000Z" },
+      },
+    ],
+  });
+  assert.equal(windows.five_hour.status, "ok");
+  assert.ok(Math.abs(windows.five_hour.usedPercent! - 20) < 0.01);
+  assert.equal(windows.five_hour.resetsAtIso, "2026-10-16T15:00:00.000Z");
+  assert.equal(windows.week.status, "ok");
+  assert.ok(Math.abs(windows.week.usedPercent! - 25) < 0.01);
+});
+
+test("zai mapQuota keeps a weekly TOKENS_LIMIT out of the 5h window (A6)", () => {
+  const fiveH = { type: "TOKENS_LIMIT", percentage: 12, nextResetTime: Date.parse("2026-10-16T15:00:00.000Z") };
+  const week = { type: "TOKENS_LIMIT", percentage: 64, nextResetTime: Date.parse("2026-10-20T00:00:00.000Z") };
+  for (const limits of [[fiveH, week], [week, fiveH]]) {
+    const windows = zaiTest.mapQuota({ data: { limits } });
+    assert.equal(windows.five_hour.usedPercent, 12);
+    assert.equal(windows.week.usedPercent, 64);
+  }
+});
+
+test("openrouter and grok read null amounts as unknown, not 0 (A8)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const reply = (body: unknown) => {
+    globalThis.fetch = async () => new Response(JSON.stringify(body), { status: 200 });
+  };
+  const cfg = bareConfig({ openrouter: { apiKey: "or-key" }, grok: { oauthToken: "grok-token" } });
+
+  reply({ data: { total_credits: null, total_usage: null } });
+  const or = await fetchOpenRouterUsage(cfg);
+  assert.equal(or.balance?.remaining, null);
+  assert.equal(providerLine(or), "openrouter: NA");
+
+  reply({ credits_limit: 500, credits_used: 120, remaining: null });
+  const grok = await fetchGrokUsage(cfg);
+  assert.equal(grok.balance?.remaining, null);
+  assert.equal(providerLine(grok), "grok: month 24%");
 });

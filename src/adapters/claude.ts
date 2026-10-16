@@ -19,6 +19,8 @@ const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const TOKEN_EXPIRY_SKEW_MS = 60_000;
 export const CLAUDE_BACKOFF_BASE_MS = 60_000;
 export const CLAUDE_BACKOFF_MAX_MS = 60 * 60_000;
+/** Older cached data is not served: the widget would show it as live. */
+export const CLAUDE_CACHE_MAX_AGE_MS = 30 * 60_000;
 
 interface ClaudeOAuthCreds {
   accessToken: string;
@@ -32,6 +34,7 @@ interface BackoffState {
 
 /** Soft cache so 429s don't wipe the last good spend/windows from the widget. */
 let cachedOk: ProviderUsage | null = null;
+let cachedAtMs = 0;
 let usageBackoff: BackoffState = { untilMs: 0, streak: 0 };
 let nowFn: () => number = () => Date.now();
 
@@ -87,10 +90,25 @@ function rateLimitUsage(untilMs: number, fetchedAt: string): ProviderUsage {
   };
 }
 
+/**
+ * The last good payload, marked stale, while it is younger than the age cap.
+ * Windows whose reset passed are unavailable: their old % is no longer true.
+ * Keep the cached fetchedAt so old data does not show as fresh.
+ */
+function staleCached(reason: string): ProviderUsage | null {
+  if (!cachedOk || nowMs() - cachedAtMs > CLAUDE_CACHE_MAX_AGE_MS) return null;
+  const windows = { ...cachedOk.windows };
+  for (const id of Object.keys(windows) as WindowId[]) {
+    const resetMs = Date.parse(windows[id].resetsAtIso ?? "");
+    if (windows[id].status === "ok" && resetMs <= nowMs()) {
+      windows[id] = unavailableAll("Window reset since the last good read.")[id];
+    }
+  }
+  return { ...cachedOk, windows, error: `stale: ${reason}` };
+}
+
 function holdForBackoff(untilMs: number, fetchedAt: string): ProviderUsage {
-  // Keep the cached fetchedAt so old data does not show as fresh.
-  if (cachedOk) return cachedOk;
-  return rateLimitUsage(untilMs, fetchedAt);
+  return staleCached(rateLimitReason(untilMs)) ?? rateLimitUsage(untilMs, fetchedAt);
 }
 
 function claudeCredentialsPath(): string {
@@ -143,6 +161,12 @@ function moneyFromMinor(
   return Number((minor / 10 ** e).toFixed(e));
 }
 
+/** Round a used %, but 99.6 reads 99, not a full 100. */
+function usedPct(n: number): number {
+  const r = Math.round(n);
+  return n < 100 && r === 100 ? 99 : r;
+}
+
 function mapSpendBalance(body: Record<string, unknown>): BalanceBreakdown | undefined {
   const spend = body.spend as Record<string, unknown> | undefined;
   if (spend && spend.enabled !== false) {
@@ -159,7 +183,7 @@ function mapSpendBalance(body: Record<string, unknown>): BalanceBreakdown | unde
         total,
         remaining: Math.max(0, remaining),
         label: Number.isFinite(percent)
-          ? `Spend limit - ${Math.round(percent)}% used`
+          ? `Spend limit - ${usedPct(percent)}% used`
           : "Spend limit",
       };
     }
@@ -181,7 +205,7 @@ function mapSpendBalance(body: Record<string, unknown>): BalanceBreakdown | unde
     total,
     remaining: Math.max(0, Number((total - used).toFixed(2))),
     label: Number.isFinite(utilization)
-      ? `Spend limit - ${Math.round(utilization)}% used`
+      ? `Spend limit - ${usedPct(utilization)}% used`
       : "Spend limit",
   };
 }
@@ -189,9 +213,8 @@ function mapSpendBalance(body: Record<string, unknown>): BalanceBreakdown | unde
 function mapOAuthUsage(body: Record<string, unknown>): Record<WindowId, WindowUsage> {
   const windows = unavailableAll("Claude did not report this window.");
   const five = body.five_hour as Record<string, unknown> | undefined;
-  const seven = (body.seven_day ?? body.seven_day_opus ?? body.seven_day_sonnet) as
-    | Record<string, unknown>
-    | undefined;
+  // Only seven_day is the weekly limit. seven_day_opus / _sonnet are model sub-limits.
+  const seven = body.seven_day as Record<string, unknown> | undefined;
 
   const apply = (id: WindowId, block: Record<string, unknown> | undefined) => {
     if (!block) return;
@@ -289,18 +312,20 @@ export async function fetchClaudeUsage(cfg: Config): Promise<ProviderUsage> {
       return holdForBackoff(usageBackoff.untilMs, fetchedAt);
     }
     if (!res.ok) {
-      if (cachedOk) return cachedOk;
-      return errorUsage(authErrorReason(res.status), fetchedAt);
+      const reason = authErrorReason(res.status);
+      return staleCached(reason) ?? errorUsage(reason, fetchedAt);
     }
     const body = (await res.json()) as Record<string, unknown>;
     const usage = usageFromBody(body, fetchedAt);
-    if (!usage.error) cachedOk = usage;
+    if (!usage.error) {
+      cachedOk = usage;
+      cachedAtMs = nowMs();
+    }
     usageBackoff = clearBackoff();
     return usage;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (cachedOk) return cachedOk;
-    return errorUsage(msg, fetchedAt);
+    return staleCached(msg) ?? errorUsage(msg, fetchedAt);
   }
 }
 
@@ -320,6 +345,7 @@ export const __test = {
   },
   resetCache() {
     cachedOk = null;
+    cachedAtMs = 0;
     usageBackoff = clearBackoff();
     nowFn = () => Date.now();
   },

@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { unavailableAll } from "../src/types.js";
 
-const ENV_KEYS = ["TOKEN_USAGE_WIDGET_CONFIG", "APPDATA", "HOME", "USERPROFILE"] as const;
+const ENV_KEYS = ["TOKEN_USAGE_WIDGET_CONFIG", "APPDATA", "HOME", "USERPROFILE", "PORT", "USAGE_HOST"] as const;
 const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 const tempDirs: string[] = [];
 
@@ -121,4 +122,30 @@ test("loadConfig keeps every provider off before setup (no config.example.json m
   const mod = await loadFreshConfigModule();
   const loaded = await mod.loadConfig();
   assert.deepEqual(Object.values(loaded.providers).filter(Boolean), []);
+});
+
+test("a settings save keeps the poll cache (B5)", async (t) => {
+  tempConfig();
+  const { __test: pollTest } = await import("../src/providers/poll-cache.js");
+  const { saveUiSettingsPatch } = await import("../src/settings-api.js");
+  pollTest.resetPollCache();
+  t.after(() => pollTest.resetPollCache());
+  pollTest.cache.set("claude", {
+    fetchedAtMs: Date.now(),
+    usage: { provider: "claude", label: "Claude", windows: unavailableAll("cached"), fetchedAt: new Date().toISOString() },
+  });
+  await saveUiSettingsPatch({ refreshIntervalSec: 120 });
+  assert.equal(pollTest.cache.has("claude"), true, "a save must not call every provider again");
+});
+
+test("a bad PORT env keeps the config port (B10)", async () => {
+  const cfg = tempConfig();
+  fs.writeFileSync(cfg, JSON.stringify({ server: { port: 5555 } }));
+  const mod = await loadFreshConfigModule();
+  for (const bad of ["abc", " ", "0"]) {
+    process.env.PORT = bad;
+    assert.equal((await mod.loadConfig()).server.port, 5555, JSON.stringify(bad));
+  }
+  process.env.PORT = "6000";
+  assert.equal((await mod.loadConfig()).server.port, 6000);
 });

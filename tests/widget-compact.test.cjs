@@ -11,7 +11,7 @@ test("codex compact line uses remaining % (matches Codex Analytics)", () => {
       month: { status: "unavailable", usedPercent: null, remainingPercent: null },
     },
   });
-  assert.equal(line, "codex: Week 53%");
+  assert.equal(line, "codex: Week 53% left");
 });
 
 test("cursor compact line matches dense format", () => {
@@ -124,7 +124,7 @@ test("codex compact appends short reset per ok window", () => {
     },
     { nowMs: now },
   );
-  assert.equal(line, "codex: Week 53% (3d 5h)");
+  assert.equal(line, "codex: Week 53% left (3d 5h)");
 });
 
 test("cursor compact appends cycle reset countdown", () => {
@@ -189,4 +189,50 @@ test("providerTitle uses human-readable dates, not raw ISO", () => {
   assert.match(title, / · week /);
   assert.doesNotMatch(title, /T\d{2}:\d{2}:\d{2}/);
   assert.doesNotMatch(title, /\.000Z/);
+});
+
+test("codex compact says left, so an empty quota does not read as 0% used (A1)", () => {
+  const now = Date.parse("2026-10-16T12:00:00.000Z");
+  const reset = new Date(now + (25 * 24 + 23) * 3600 * 1000).toISOString();
+  const line = providerLine(
+    {
+      provider: "openai",
+      windows: {
+        five_hour: { status: "unavailable", usedPercent: null, remainingPercent: null },
+        week: { status: "unavailable", usedPercent: null, remainingPercent: null },
+        month: { status: "ok", usedPercent: 100, remainingPercent: 0, resetsAtIso: reset },
+      },
+    },
+    { nowMs: now },
+  );
+  assert.equal(line, "codex: Month 0% left (25d 23h)");
+});
+
+test("cursor, openrouter and grok show the error label, not NA (A3)", () => {
+  const na = { status: "unavailable", usedPercent: null, remainingPercent: null };
+  const windows = { five_hour: na, week: na, month: na };
+  const billing = { totalPercentUsed: null, autoPercentUsed: null, apiPercentUsed: null, remainingPercent: null };
+  const err = (provider, error, extra = {}) => providerLine({ provider, windows, error, ...extra });
+  assert.equal(err("cursor", "Cursor GetCurrentPeriodUsage HTTP 401", { billing }), "cursor: HTTP 401");
+  assert.equal(err("openrouter", "OpenRouter credits HTTP 401"), "openrouter: HTTP 401");
+  assert.equal(err("grok", "Grok billing HTTP 403"), "grok: HTTP 403");
+  assert.equal(providerLine({ provider: "grok", windows }), "grok: NA");
+});
+
+test("cursor compact marks a hit usage limit first (A4)", () => {
+  const line = providerLine({
+    provider: "cursor",
+    billing: { totalPercentUsed: 42, autoPercentUsed: null, apiPercentUsed: null, limitHit: true },
+  });
+  assert.equal(line, "cursor: limit hit, total 42%");
+});
+
+test("compact percents never show full or empty early (A7)", () => {
+  const off = { status: "unavailable", usedPercent: null, remainingPercent: null };
+  const windows = { five_hour: { status: "ok", usedPercent: 99.6, remainingPercent: 0.4 }, week: off, month: off };
+  assert.equal(providerLine({ provider: "claude", windows }), "claude: 5h 99%");
+  assert.equal(providerLine({ provider: "openai", windows }), "codex: 5h 1% left");
+  // Float noise from used/limit*100 (29/100*100 = 28.999...) must not drop a point.
+  const noisy = { ...windows, five_hour: { status: "ok", usedPercent: (29 / 100) * 100, remainingPercent: 71 } };
+  assert.equal(providerLine({ provider: "kimi", windows: noisy }), "kimi: 5h 29%");
 });

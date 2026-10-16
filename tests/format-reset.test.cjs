@@ -70,3 +70,11 @@ test("formatReset says <1 minute and omits zero parts", () => {
   assert.equal(at(24 * 3600_000 + 30 * 60_000), "Resets in 1 day");
   assert.equal(at(3600_000 + 60_000), "Resets in 1 hour 1 minute");
 });
+
+test("formatResetShort says <1m under one minute, not 0m (A9)", () => {
+  const now = Date.parse("2026-07-19T12:00:00.000Z");
+  const at = (ms) => formatResetShort(new Date(now + ms).toISOString(), now);
+  assert.equal(at(20_000), "<1m");
+  assert.equal(at(59_999), "<1m");
+  assert.equal(at(90_000), "2m");
+});
