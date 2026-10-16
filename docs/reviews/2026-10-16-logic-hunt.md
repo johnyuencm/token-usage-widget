@@ -1,6 +1,6 @@
 # 2026-10-16 logic hunt: feedback loops and broken logic
 
-Status: in progress. Desktop part done. Backend, adapters, CLI and UI parts run in separate agents and are added here when they finish.
+Status: in progress. Desktop and adapter parts done. Backend, CLI and UI parts run in separate agents and are added here when they finish.
 
 The D0 fix is in the working tree, not committed yet (desktop/main.cjs, desktop/widget-dock.cjs, tests/server-launch.test.cjs). The owner decides on the commit.
 
@@ -29,3 +29,26 @@ Probe: a scratch probe (not in the repo) runs the real `runWidgetMain` with a sc
 - Evidence: rest on the 125% monitor (3235,882). Simulated display-removed then display-added. Saved file after quit: x=1699 (primary). The widget does not go back.
 - This machine uses Modern Standby, so monitors drop at sleep.
 - Fix idea: keep the user home separate from the clamped placement; on display-added, restore the home when its display is back.
+
+## Adapters and widget line (agent hunt)
+
+Spot-checked by commander: A2 (claude.ts:292,302 read back) and A9 (fmt.js:53 read back). Both hold.
+
+Codex "Month 0%" answer: the value is correct, but its label misleads. Raw Codex data: `usedPercent: 100`, `rateLimitReachedType: "rate_limit_reached"`, window 43200 min, limits `planType: "free"` while the account `planType` is `"plus"`. The dashboard shows 100% used. The 25d 23h reset is correct.
+
+| id | file:line | defect | verdict |
+|----|-----------|--------|---------|
+| A1 | public/widget-compact.js:184,41 | Codex "N%" means left; every other provider "N%" means used. No word shows which. Live: `codex: Month 0%` = quota empty. | CONFIRMED (live) |
+| A2 | src/adapters/claude.ts:90-94,292,302 | On 429, 5xx or network error, the adapter returns old `cachedOk` with no age limit and no `error`. Repro: 6 h later shows `claude: 5h 95% (now)`, error undefined. | CONFIRMED |
+| A3 | public/widget-compact.js:122,143,149,180 | Error guard `!p.windows && !p.balance` is never true (adapters always return windows). cursor, openrouter, grok show `NA` instead of `HTTP 401` / `not signed in`. | CONFIRMED |
+| A4 | src/adapters/cursor.ts:109-150, public/app.js:204-207 | Live Cursor says "You've hit your usage limit" (spend 54570 of limit 7000 cents, `remainingBonus: false`). Widget shows `total 42%`; the message shows nowhere. | PLAUSIBLE |
+| A5 | src/adapters/kimi.ts:140,178-187 | The kimi-cli payload shape (`usage`/`limits`) maps to no window: `kimi: NA`, no error. Shape from memory; no live key. | PLAUSIBLE |
+| A6 | src/adapters/zai.ts:96 | Every `TOKENS_LIMIT` entry maps to `five_hour`; a weekly entry overwrites the 5h value. Live shape not verified. | PLAUSIBLE |
+| A7 | public/widget-compact.js:12, src/adapters/cursor.ts:49-51,141 | `Math.round` turns 99.6% used into "100%" and "0% left". | CONFIRMED |
+| A8 | src/adapters/grok.ts:59, src/adapters/openrouter.ts:42 | `Number(null)` is 0: null becomes `0 credits left` / `$0.00 left`. | PLAUSIBLE |
+| A9 | public/fmt.js:53,59 | Short reset text shows `0m` when less than 30 s are left. | CONFIRMED |
+| A10 | src/adapters/claude.ts:192-194 | When `seven_day` is null, the first Opus/Sonnet sub-limit is labelled "Week" (repro: Week 0% while Sonnet is 88%). | PLAUSIBLE |
+
+Fix ideas: A1 add "left" or show used for all. A2 drop windows whose reset passed, mark stale, cap cache age. A3 `p.error ? compactErrorLabel(p.error) : "NA"`. A4 show "limit hit" when `totalSpend >= limit && !remainingBonus`. A7 floor used, ceil remaining. A8 `num(v)` helper returning null for null/undefined/"". A9 `if (diff < 60000) return "<1m"`. A10 map only `seven_day` to Week.
+
+Repro files are in a scratch folder, not in the repo.
