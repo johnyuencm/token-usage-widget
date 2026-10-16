@@ -530,8 +530,9 @@ function runWidgetMain({
   function createWindow() {
     // Windows taskbar/window chrome uses the PNG set; Darwin menu-bar utility does not.
     const icon = platform === "win32" ? windowIconPath() : undefined;
+    const placement = windowPlacement();
     win = new BrowserWindow({
-      ...windowPlacement(),
+      ...placement,
       frame: false,
       transparent: false,
       alwaysOnTop: true,
@@ -552,6 +553,10 @@ function runWidgetMain({
         sandbox: true,
       },
     });
+    // On Windows, the constructor scales the size by a non-primary display's
+    // factor (125%: 221x141 becomes 280x178), and each start saved it bigger.
+    // setBounds applies the same rectangle in DIP.
+    win.setBounds(placement);
 
     win.setAlwaysOnTop(true, policy.windowLevel);
     win.setVisibleOnAllWorkspaces(policy.visibleOnAllWorkspaces, {
@@ -584,7 +589,7 @@ function runWidgetMain({
         release.unref?.();
       },
     });
-    dock.setRest(win.getBounds());
+    dock.setRest(placement);
 
     win.once("ready-to-show", () => {
       showWindow({ inactive: true });

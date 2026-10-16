@@ -55,6 +55,7 @@ async function loadMainHarness(
     dockTiming = null,
     argv = [],
     health = () => ({ ok: true, fixture: false }),
+    constructorScale = 1,
   } = {},
 ) {
   const mainPath = require.resolve("../desktop/main.cjs");
@@ -110,8 +111,9 @@ async function loadMainHarness(
       this.bounds = {
         x: options.x,
         y: options.y,
-        width: options.width,
-        height: options.height,
+        // Electron on Windows scales the constructor size by a non-primary display's factor.
+        width: Math.round(options.width * constructorScale),
+        height: Math.round(options.height * constructorScale),
       };
       windows.push(this);
     }
@@ -1112,12 +1114,32 @@ test("Win32 fit-content does not grow a minimized widget", async () => {
   const harness = await loadMainHarness(idleWin32Server(), { platform: "win32", userDataDir: dir });
   const window = harness.windows[0];
   const before = window.getBounds();
+  const calls = window.boundsCalls.length;
   const result = await harness.ipcHandlers.get("widget:fit-content")({}, { height: 510 });
   assert.deepEqual(result, { locked: false });
   const after = window.getBounds();
   assert.equal(after.width, before.width);
   assert.equal(after.height, before.height);
-  assert.equal(window.boundsCalls.length, 0);
+  assert.equal(window.boundsCalls.length, calls);
+});
+
+test("Win32 start keeps the saved size on a 125% display", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
+  const saved = { x: 1500, y: 800, width: 221, height: 141, userSized: true };
+  saveBounds(dir, saved);
+  const harness = await loadMainHarness(idleWin32Server(), {
+    platform: "win32",
+    userDataDir: dir,
+    constructorScale: 1.25,
+  });
+  const window = harness.windows[0];
+  const { userSized, ...rect } = saved;
+  assert.deepEqual(window.getBounds(), rect);
+  // DIP to pixel rounding reports the left and top edges 1 px out on show.
+  window.bounds = { x: 1499, y: 799, width: 222, height: 142 };
+  window.emit("move");
+  harness.app.quit();
+  assert.deepEqual(loadBounds(dir), saved);
 });
 
 test("Win32 fit-content can still shrink toward content above the minimum", async () => {

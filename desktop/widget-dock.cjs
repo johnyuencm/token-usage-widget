@@ -13,6 +13,11 @@ function sameBounds(a, b) {
   );
 }
 
+/** DIP to pixel rounding on a scaled display moves an edge by up to 2 px. */
+function nearBounds(a, b, px = 2) {
+  return ["x", "y", "width", "height"].every((k) => Math.abs(a[k] - b[k]) <= px);
+}
+
 /**
  * Slide the widget between its home rectangle and the parked strip.
  * Timers are injectable so tests do not wait on the clock.
@@ -173,6 +178,8 @@ function createWidgetDock({
     },
     noteUserBounds(bounds) {
       if (applying || hidden) return false;
+      // Rounding noise is not a user move. Saving it made each start 1 px bigger.
+      if (rest && nearBounds(rest, bounds)) return false;
       remember(bounds);
       onRest?.();
       return true;
