@@ -1,6 +1,6 @@
 # 2026-10-16 logic hunt: feedback loops and broken logic
 
-Status: in progress. Desktop and adapter parts done. Backend, CLI and UI parts run in separate agents and are added here when they finish.
+Status: in progress. Desktop, adapter and backend parts done. The CLI and UI part runs in an agent and is added here when it finishes.
 
 The D0 fix is in the working tree, not committed yet (desktop/main.cjs, desktop/widget-dock.cjs, tests/server-launch.test.cjs). The owner decides on the commit.
 
@@ -52,3 +52,24 @@ Codex "Month 0%" answer: the value is correct, but its label misleads. Raw Codex
 Fix ideas: A1 add "left" or show used for all. A2 drop windows whose reset passed, mark stale, cap cache age. A3 `p.error ? compactErrorLabel(p.error) : "NA"`. A4 show "limit hit" when `totalSpend >= limit && !remainingBonus`. A7 floor used, ceil remaining. A8 `num(v)` helper returning null for null/undefined/"". A9 `if (diff < 60000) return "<1m"`. A10 map only `seven_day` to Week.
 
 Repro files are in a scratch folder, not in the repo.
+
+## Backend: server, cache, config, settings (agent hunt)
+
+Spot-checked by commander: B1 (server.ts:49), B2 (poll-cache.ts:18) and B5 (settings-api.ts:37) read back. All hold.
+
+| id | file:line | defect | verdict |
+|----|-----------|--------|---------|
+| B1 | src/server.ts:49 | Top-level `fetchedAt` is always "now", and the UI reads only that field. Cached data shows as fresh (live: response now, Claude data 110 s old). Fix S8 does not reach the UI. | CONFIRMED (live) |
+| B2 | src/providers/poll-cache.ts:18 | Cache TTL equals the widget refresh period. A tick 1 ms early gets data one period old (sim: 12 ticks, 5 stale). | CONFIRMED |
+| B3 | src/ui-settings.ts:90,136; public/app.js:351,378 | An interval that the `<select>` does not list shows blank; the form sends 0 and the server saves 30 s (Claude 3600 s becomes 30 s, then 429). | CONFIRMED |
+| B4 | src/config.ts:210 | `loadConfig` swallows a JSON parse error. The widget shows "No providers" with no error; PUT /api/settings gives 400. | CONFIRMED |
+| B5 | src/settings-api.ts:37; poll-cache.ts:9-12,33 | Each settings save clears the cache and calls every provider again (bypasses the Claude 300 s guard). Clearing `inflight` mid-fetch lets the old `finally` delete the newer in-flight entry. | CONFIRMED |
+| B6 | src/config.ts:34-43 | The "one-time" migration runs on every request. A deleted user config comes back from the checkout `./config.json`, with the old opencode cookie (fix S7 incomplete). | CONFIRMED |
+| B7 | src/ui-settings.ts:141-146 | A partial display patch resets the sibling display flags to defaults. | CONFIRMED (low) |
+| B8 | src/providers/poll-cache.ts:29 | One upstream error replaces the last good entry for the full poll interval. | CONFIRMED |
+| B9 | src/server.ts:45; src/fixtures.ts:167 | Fixture response has no `ui`, so the widget ignores settings in fixture mode. | CONFIRMED (low) |
+| B10 | src/config.ts:180,205 | `PORT=abc` also disables the config port; `PORT=" "` gives a random port. | CONFIRMED (low) |
+| B11 | src/login-launch.ts:194,215-227 | macOS: a repeated install skips bootout but runs bootstrap, which fails; a repeated `tuw setup` fails. | PLAUSIBLE |
+| B12 | src/config.ts:206; desktop/main.cjs:42-43 | Server binds config `server.host`; desktop checks 127.0.0.1. With a LAN IP the widget never connects. | PLAUSIBLE |
+
+Fix ideas: B1 send the oldest provider `fetchedAt`, or show age per provider. B2 TTL margin (`< minMs - 5_000`). B3 ignore non-positive values and keep the current one; add the current value as an option. B4 surface `configError`. B5 delete the `resetPollCache()` call. B6 migrate only when the user-data folder is new, and write through `parseConfigText` + `writeConfigFile`. B8 keep the last good entry when the new result has an error, or give errors a short TTL.
