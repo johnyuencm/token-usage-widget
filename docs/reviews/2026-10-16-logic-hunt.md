@@ -135,5 +135,10 @@ Fix ideas: CLI-1 start from the existing flags and only set detected agents to t
   - A7 changed by commander: round like the vendor bills (Cursor 12.87% shows 13%), but never show 100% used below 100, or 0% left above 0. Floor rounding disagreed with the Cursor bill.
   - B12 SKIPPED: the desktop always passes `USAGE_HOST` (server-launch.cjs:312), so an env override made the server ignore `server.host` and broke `0.0.0.0` LAN binds. A real fix needs the desktop to read the server config.
   - Side effect: one backend test run wrote an empty `%APPDATA%/token-usage-widget/.cwd-config-migrated` marker (B6). The server writes the same file on its first start, so it does no harm. Tests now use a temp config.
-- Open hand-off: `public/app.js` A7 rounding (`fmtPctWhole`) and an A4 "limit hit" marker on the Cursor card. Commander does it after the CLI/UI agent finishes.
-- CLI/UI items and B11: in progress (agent).
+- CLI-1 to CLI-8, UI-1, UI-4, UI-5, PS-1, B11, and the dashboard part of A4/A7: fixed, commit 544b593.
+  - B11 also needed: the startup execFile seam keeps launchctl stderr, and bootout uses `gui/<uid>/<label>`. Not tested on a real Mac.
+  - CLI-7 is a heuristic: only a first setup (no saved providers) installs the LaunchAgent; later setups refresh it only while the plist exists.
+  - SKIPPED: STARTUP-1 (plausible; the shortcut root comes from desktop/main.cjs) and CLI-9 (needs a server reload endpoint or an owner field on /api/health).
+- `npm run verify`: exit 0. 274 tests: 271 pass, 0 fail, 3 skipped (macOS/Linux only). E2E PASS.
+- Live widget restarted on the branch: window 222x142 at 125% (no growth); lines `codex: Month 92% left (29d 23h)`, `cursor: limit hit, total 42% ...`, `claude: 5h 37% (4h 31m)`.
+- Independent verification: in progress (fresh agent, same model family; a second family is not available in this session).
