@@ -8,7 +8,7 @@ const { DOCK_PEEK_PX } = require("../desktop/widget-bounds.cjs");
 const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
 const home = { x: 1584, y: 892, width: 320, height: 172 };
 
-function harness() {
+function harness(opts = {}) {
   let current = { ...home };
   const sets = [];
   const pending = [];
@@ -37,6 +37,7 @@ function harness() {
       sets.push({ ...bounds });
     },
     workAreaFor: () => workArea,
+    ...opts,
   });
   dock.setRest(home);
   return {
@@ -93,4 +94,12 @@ test("retarget keeps a parked widget on the strip after the home moves", () => {
   assert.equal(box.pos().x, moved.x);
   assert.equal(box.pos().y, workArea.height - DOCK_PEEK_PX);
   assert.equal(box.dock.getRest().y, moved.y);
+});
+
+test("the widget stays open when every near edge is blocked", () => {
+  const box = harness({ blockedFor: () => [{ x: 0, y: 0, width: 4000, height: 4000 }] });
+  box.dock.notePointer(false);
+  box.flush();
+  assert.equal(box.dock.isHidden(), false);
+  assert.deepEqual(box.pos(), home);
 });

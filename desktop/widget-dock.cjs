@@ -42,6 +42,7 @@ function createWidgetDock({
   getBounds,
   setBounds,
   workAreaFor,
+  blockedFor = () => [],
   onSlideStart,
   onSlideEnd,
   onRest,
@@ -63,10 +64,19 @@ function createWidgetDock({
     };
   }
 
+  function parkedFor() {
+    return dockedBounds(rest, workAreaFor(rest), peek, blockedFor(rest));
+  }
+
+  /** False when every near edge is blocked; the widget then stays open. */
+  function canPark() {
+    return Boolean(rest) && parkedFor().edge !== null;
+  }
+
   function targetFor(wantHidden) {
     if (!rest) return null;
     if (!wantHidden) return { ...rest };
-    const parked = dockedBounds(rest, workAreaFor(rest), peek);
+    const parked = parkedFor();
     return {
       x: parked.x,
       y: parked.y,
@@ -88,7 +98,7 @@ function createWidgetDock({
   }
 
   function slide(wantHidden) {
-    hidden = Boolean(wantHidden);
+    hidden = Boolean(wantHidden) && canPark();
     if (!rest) return;
     const target = targetFor(hidden);
     const from = getBounds();
@@ -167,6 +177,7 @@ function createWidgetDock({
     },
     retarget() {
       if (!rest) return;
+      hidden = hidden && canPark();
       const target = targetFor(hidden);
       const from = getBounds();
       if (!target || !from || sameBounds(from, target)) return;

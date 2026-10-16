@@ -14,6 +14,7 @@ const {
   clampBoundsToWorkArea,
   restorePlacement,
   boundsContainPoint,
+  dockBlockers,
   hoverTargetBounds,
   MIN_WIDTH,
   MIN_HEIGHT,
@@ -77,6 +78,14 @@ function runWidgetMain({
   let userSized = false;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let persistTimer = null;
+  /**
+   * Win32: the rectangle the user chose, which persist saves. It differs from the
+   * dock rest only while its display is away (sleep, monitor off): then the rest
+   * is clamped onto another display, and the home comes back with its display.
+   */
+  let home = null;
+  /** `will-move` fires only for a manual move, never for setBounds or an OS move. */
+  let lastWillMoveAt = 0;
   /** True while a dock slide owns setBounds. User moves must not save the strip. */
   let applyingDock = false;
   let dockEpoch = 0;
@@ -250,16 +259,27 @@ function runWidgetMain({
     healthTimer.unref?.();
   }
 
-  function workAreaFor(bounds) {
+  function displayFor(bounds) {
     if (bounds && typeof screen.getDisplayMatching === "function") {
       try {
         const display = screen.getDisplayMatching(bounds);
-        if (display?.workArea) return display.workArea;
+        if (display?.workArea) return display;
       } catch {
         // Fall through to the platform default display.
       }
     }
-    return selectDisplay(policy, screen).workArea;
+    return selectDisplay(policy, screen);
+  }
+
+  function workAreaFor(bounds) {
+    return displayFor(bounds).workArea;
+  }
+
+  function blockedFor(bounds) {
+    const display = displayFor(bounds);
+    if (!display?.bounds) return [];
+    const all = typeof screen.getAllDisplays === "function" ? screen.getAllDisplays() : [];
+    return dockBlockers(display, all);
   }
 
   function windowPlacement() {
@@ -271,7 +291,25 @@ function runWidgetMain({
       const size = saved || fallback;
       return cornerPlacement(size, selectDisplay(policy, screen).workArea, policy.margin);
     }
-    return restorePlacement(saved, workAreaFor(saved), policy.margin, fallback);
+    const placed = restorePlacement(saved, workAreaFor(saved), policy.margin, fallback);
+    home =
+      saved && saved.x !== undefined
+        ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height }
+        : placed;
+    return placed;
+  }
+
+  /**
+   * Electron on Windows sizes a setBounds that crosses to a display with another
+   * scale by the old scale (221 wide becomes 278 at 125%, 177 back at 100%).
+   * getBounds shows it at once, and a second call on the new display is exact.
+   */
+  function placeWindow(bounds) {
+    win.setBounds(bounds);
+    const got = win.getBounds();
+    if (Math.abs(got.width - bounds.width) > 2 || Math.abs(got.height - bounds.height) > 2) {
+      win.setBounds(bounds);
+    }
   }
 
   function persistWindowBounds() {
@@ -281,7 +319,7 @@ function runWidgetMain({
     const dir = userDataDir();
     if (!dir) return;
     try {
-      const b = dock?.getRest() || win.getBounds();
+      const b = home || dock?.getRest() || win.getBounds();
       const payload = { x: b.x, y: b.y, width: b.width, height: b.height };
       if (userSized) payload.userSized = true;
       saveBounds(dir, payload);
@@ -317,9 +355,9 @@ function runWidgetMain({
     const h = Number(contentHeight);
     if (!Number.isFinite(h) || h <= 0) return { locked: false };
     const b = dock?.getRest() || win.getBounds();
-    // Wrapped rows at the 220px floor used to report a taller scroll height
-    // and bounce a minimized widget larger. Fit may shrink; it may not grow.
-    const fittedHeight = Math.min(b.height, Math.ceil(h));
+    // The renderer sends the body height, so fit may grow to show every row
+    // and shrink to drop empty space. The bounds helpers clamp it to MIN/MAX.
+    const fittedHeight = Math.ceil(h);
     const next =
       platform === "darwin"
         ? resizeBottomRight(b, b.width, fittedHeight)
@@ -327,17 +365,19 @@ function runWidgetMain({
             { x: b.x, y: b.y, width: b.width, height: fittedHeight },
             workAreaFor(b),
           );
+    // Fit changes the size only; the home keeps its place while its display is away.
+    if (home) home = { ...home, width: next.width, height: next.height };
     if (next.width === b.width && next.height === b.height && next.x === b.x && next.y === b.y) {
       dock?.setRest(next);
-      persistSize(next);
+      persistSize(home || next);
       return { locked: false };
     }
     applyingFit = true;
     try {
       dock?.setRest(next);
       if (dock?.isHidden()) dock.retarget();
-      else win.setBounds(next);
-      persistSize(next);
+      else placeWindow(next);
+      persistSize(home || next);
     } finally {
       const release = setTimeout(() => {
         applyingFit = false;
@@ -440,19 +480,21 @@ function runWidgetMain({
         dock.retarget();
         return;
       }
-      win.setBounds(placed);
+      placeWindow(placed);
       return;
     }
     if (typeof win.getBounds !== "function") return;
     const b = dock?.getRest() || win.getBounds();
-    const next = clampBoundsToWorkArea(b, workAreaFor(b));
+    // Clamp from the home, so a display that comes back gets the widget back.
+    const base = home || b;
+    const next = clampBoundsToWorkArea(base, workAreaFor(base));
     dock?.setRest(next);
     if (dock?.isHidden()) {
       dock.retarget();
       return;
     }
     if (next.x !== b.x || next.y !== b.y || next.width !== b.width || next.height !== b.height) {
-      win.setBounds(next);
+      placeWindow(next);
     }
   }
 
@@ -477,6 +519,7 @@ function runWidgetMain({
       hidden: dock.isHidden(),
       applying: dock.isApplying(),
       peek: DOCK_PEEK_PX,
+      blocked: rest ? blockedFor(rest) : [],
     });
     if (!target) return null;
     return boundsContainPoint(target, point);
@@ -556,7 +599,7 @@ function runWidgetMain({
     // On Windows, the constructor scales the size by a non-primary display's
     // factor (125%: 221x141 becomes 280x178), and each start saved it bigger.
     // setBounds applies the same rectangle in DIP.
-    win.setBounds(placement);
+    placeWindow(placement);
 
     win.setAlwaysOnTop(true, policy.windowLevel);
     win.setVisibleOnAllWorkspaces(policy.visibleOnAllWorkspaces, {
@@ -573,9 +616,10 @@ function runWidgetMain({
       getBounds: () => win.getBounds(),
       setBounds: (bounds) => {
         if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return;
-        win.setBounds(bounds);
+        placeWindow(bounds);
       },
       workAreaFor: (bounds) => workAreaFor(bounds),
+      blockedFor: (bounds) => blockedFor(bounds),
       onSlideStart: () => {
         dockEpoch += 1;
         applyingDock = true;
@@ -605,8 +649,13 @@ function runWidgetMain({
         schedulePersistWindowBounds();
         return;
       }
-      if (dock.noteUserBounds(b)) schedulePersistWindowBounds();
+      if (!dock.noteUserBounds(b)) return;
+      if (home && Date.now() - lastWillMoveAt < 1000) home = dock.getRest();
+      schedulePersistWindowBounds();
     };
+    win.on("will-move", () => {
+      lastWillMoveAt = Date.now();
+    });
     win.on("resize", onUserGeometry);
     win.on("move", onUserGeometry);
     win.on("moved", onUserGeometry);
@@ -617,9 +666,12 @@ function runWidgetMain({
         if (dock.isHidden()) {
           const rest = dock.getRest();
           if (rest) dock.setRest({ ...rest, width: b.width, height: b.height });
+          if (home) home = { ...home, width: b.width, height: b.height };
           dock.retarget();
         } else {
           dock.noteUserBounds(b);
+          // The resize events already moved the rest, so take it even when b is near it.
+          if (home) home = dock.getRest();
         }
       }
       persistWindowBounds();

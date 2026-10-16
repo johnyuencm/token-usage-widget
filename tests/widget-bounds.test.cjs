@@ -11,6 +11,7 @@ const {
   clampBoundsToWorkArea,
   restorePlacement,
   nearestDockEdge,
+  dockBlockers,
   dockedBounds,
   lerpBounds,
   boundsContainPoint,
@@ -121,6 +122,32 @@ test("dockedBounds parks toward the nearest side", () => {
   const top = dockedBounds({ x: 400, y: 4, width: 320, height: 172 }, workArea);
   assert.equal(top.edge, "top");
   assert.equal(top.y, DOCK_PEEK_PX - 172);
+});
+
+test("dockedBounds skips an edge that covers the taskbar or another display", () => {
+  // The layout of the machine that found the bug: a 48 px bottom taskbar,
+  // one display below the primary and one to its right.
+  const primary = {
+    id: 1,
+    bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+    workArea: { x: 0, y: 0, width: 1920, height: 1032 },
+  };
+  const below = { id: 2, bounds: { x: 384, y: 1080, width: 1536, height: 960 } };
+  const right = { id: 3, bounds: { x: 1920, y: 267, width: 1536, height: 961 } };
+  const rest = cornerPlacement({ width: 221, height: 141 }, primary.workArea, 16);
+
+  const alone = dockedBounds(rest, primary.workArea, DOCK_PEEK_PX, dockBlockers(primary, [primary]));
+  assert.equal(alone.edge, "right");
+  assert.equal(alone.x, 1920 - DOCK_PEEK_PX);
+
+  const boxed = dockedBounds(
+    rest,
+    primary.workArea,
+    DOCK_PEEK_PX,
+    dockBlockers(primary, [primary, below, right]),
+  );
+  assert.equal(boxed.edge, null);
+  assert.deepEqual({ x: boxed.x, y: boxed.y, width: boxed.width, height: boxed.height }, rest);
 });
 
 test("lerpBounds reaches the parked point and the home point", () => {

@@ -152,27 +152,67 @@ function nearestDockEdge(bounds, workArea) {
   return best;
 }
 
+function intersects(a, b) {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
+/**
+ * Rectangles a parked widget must not cover: every other display, and the
+ * strips of its own display outside the work area (the taskbar).
+ * @param {{ id?: number, bounds: { x: number, y: number, width: number, height: number }, workArea: { x: number, y: number, width: number, height: number } }} display
+ * @param {Array<{ id?: number, bounds: { x: number, y: number, width: number, height: number } }>} displays
+ */
+function dockBlockers(display, displays = []) {
+  const d = display.bounds;
+  const w = display.workArea;
+  const strips = [
+    { x: d.x, y: d.y, width: d.width, height: w.y - d.y },
+    { x: d.x, y: w.y + w.height, width: d.width, height: d.y + d.height - (w.y + w.height) },
+    { x: d.x, y: d.y, width: w.x - d.x, height: d.height },
+    { x: w.x + w.width, y: d.y, width: d.x + d.width - (w.x + w.width), height: d.height },
+  ].filter((r) => r.width > 0 && r.height > 0);
+  const others = displays.filter((o) => o.id !== display.id).map((o) => o.bounds);
+  return [...strips, ...others];
+}
+
 /**
  * Park the widget so only a strip remains on the nearest edge.
+ * A corner widget may use either edge of its corner: edges within one strip
+ * of the nearest count. An edge whose parked rectangle covers a blocker
+ * (another display, the taskbar) is skipped. No free edge: `edge` is null
+ * and the bounds stay as they are, so the widget stays open.
  * @param {{ x: number, y: number, width: number, height: number }} bounds
  * @param {{ x: number, y: number, width: number, height: number }} workArea
  * @param {number} [peek]
+ * @param {Array<{ x: number, y: number, width: number, height: number }>} [blocked]
  */
-function dockedBounds(bounds, workArea, peek = DOCK_PEEK_PX) {
-  const edge = nearestDockEdge(bounds, workArea);
+function dockedBounds(bounds, workArea, peek = DOCK_PEEK_PX, blocked = []) {
   const lip = Math.max(1, Math.round(peek));
-  const next = {
+  const base = {
     x: Math.round(bounds.x),
     y: Math.round(bounds.y),
     width: Math.round(bounds.width),
     height: Math.round(bounds.height),
-    edge,
   };
-  if (edge === "left") next.x = Math.round(workArea.x - next.width + lip);
-  if (edge === "right") next.x = Math.round(workArea.x + workArea.width - lip);
-  if (edge === "top") next.y = Math.round(workArea.y - next.height + lip);
-  if (edge === "bottom") next.y = Math.round(workArea.y + workArea.height - lip);
-  return next;
+  const distances = {
+    left: bounds.x - workArea.x,
+    right: workArea.x + workArea.width - (bounds.x + bounds.width),
+    top: bounds.y - workArea.y,
+    bottom: workArea.y + workArea.height - (bounds.y + bounds.height),
+  };
+  const nearest = Math.min(...Object.values(distances));
+  const edges = [...DOCK_EDGE_PREFERENCE]
+    .filter((edge) => distances[edge] <= nearest + lip)
+    .sort((a, b) => distances[a] - distances[b]);
+  for (const edge of edges) {
+    const next = { ...base };
+    if (edge === "left") next.x = Math.round(workArea.x - next.width + lip);
+    if (edge === "right") next.x = Math.round(workArea.x + workArea.width - lip);
+    if (edge === "top") next.y = Math.round(workArea.y - next.height + lip);
+    if (edge === "bottom") next.y = Math.round(workArea.y + workArea.height - lip);
+    if (!blocked.some((r) => intersects(next, r))) return { ...next, edge };
+  }
+  return { ...base, edge: null };
 }
 
 /**
@@ -222,12 +262,12 @@ function boundsContainPoint(bounds, point) {
 /**
  * Hover target. A parked widget uses its visible strip only.
  * An open widget also includes the strip, so the pointer can rest on the edge.
- * @param {{ rest: { x: number, y: number, width: number, height: number } | null, current: { x: number, y: number, width: number, height: number }, workArea: { x: number, y: number, width: number, height: number } | null, hidden: boolean, applying: boolean, peek?: number }} input
+ * @param {{ rest: { x: number, y: number, width: number, height: number } | null, current: { x: number, y: number, width: number, height: number }, workArea: { x: number, y: number, width: number, height: number } | null, hidden: boolean, applying: boolean, peek?: number, blocked?: Array<{ x: number, y: number, width: number, height: number }> }} input
  */
-function hoverTargetBounds({ rest, current, workArea, hidden, applying, peek = DOCK_PEEK_PX }) {
+function hoverTargetBounds({ rest, current, workArea, hidden, applying, peek = DOCK_PEEK_PX, blocked = [] }) {
   if (!current) return null;
   if (!rest || !workArea || (hidden && !applying)) return current;
-  return unionBounds(rest, dockedBounds(rest, workArea, peek));
+  return unionBounds(rest, dockedBounds(rest, workArea, peek, blocked));
 }
 
 /**
@@ -266,6 +306,7 @@ module.exports = {
   resizeBottomRight,
   clampBoundsToWorkArea,
   nearestDockEdge,
+  dockBlockers,
   dockedBounds,
   lerpBounds,
   unionBounds,

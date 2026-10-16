@@ -26,8 +26,9 @@ function applyUserSizedClass(result) {
 
 function fitToContent() {
   requestAnimationFrame(() => {
-    const root = document.documentElement;
-    const height = Math.ceil(Math.max(root.scrollHeight, root.getBoundingClientRect().height));
+    // The root scrollHeight is never below the window height, so it can not
+    // tell main to shrink. The body is as tall as its rows.
+    const height = Math.ceil(document.body.getBoundingClientRect().height);
     const pending = window.widgetBridge?.fitContent?.({ height });
     Promise.resolve(pending).then(applyUserSizedClass).catch(() => {});
   });
@@ -79,6 +80,7 @@ function renderAll(data, { fit = true } = {}) {
   const t = data.fetchedAt ? new Date(data.fetchedAt).toLocaleTimeString() : "";
   statusEl.textContent = t ? `↻ ${t}` : "";
   statusEl.classList.remove("error");
+  statusEl.title = "";
   if (fit) fitToContent();
   scheduleRefresh();
 }

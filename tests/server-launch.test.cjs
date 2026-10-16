@@ -56,6 +56,9 @@ async function loadMainHarness(
     argv = [],
     health = () => ({ ok: true, fixture: false }),
     constructorScale = 1,
+    // Electron on Windows sizes a setBounds that crosses display scales wrong.
+    setBoundsScale = () => 1,
+    displays = null,
   } = {},
 ) {
   const mainPath = require.resolve("../desktop/main.cjs");
@@ -125,11 +128,12 @@ async function loadMainHarness(
     }
     setBounds(bounds) {
       this.boundsCalls.push(bounds);
+      const scale = setBoundsScale(bounds, this.bounds);
       this.bounds = {
         x: bounds.x,
         y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
+        width: Math.round(bounds.width * scale),
+        height: Math.round(bounds.height * scale),
       };
     }
     getBounds() {
@@ -177,6 +181,14 @@ async function loadMainHarness(
   screenApi.getPrimaryDisplay = () => primaryDisplay;
   screenApi.getCursorScreenPoint = () => cursorPoint;
   screenApi.getDisplayNearestPoint = () => activePointerDisplay;
+  if (displays) {
+    const overlap = (a, b) =>
+      Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) *
+      Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+    screenApi.getAllDisplays = () => displays();
+    screenApi.getDisplayMatching = (rect) =>
+      displays().reduce((best, d) => (overlap(rect, d.bounds) > overlap(rect, best.bounds) ? d : best));
+  }
 
   const shortcutWrites = [];
   const electron = {
@@ -1109,18 +1121,68 @@ test("Win32 fit-content leaves a user-sized rectangle unchanged", async () => {
   assert.deepEqual(loadBounds(dir), saved);
 });
 
-test("Win32 fit-content does not grow a minimized widget", async () => {
+test("Win32 fit-content grows to show every row", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
   const harness = await loadMainHarness(idleWin32Server(), { platform: "win32", userDataDir: dir });
   const window = harness.windows[0];
   const before = window.getBounds();
-  const calls = window.boundsCalls.length;
   const result = await harness.ipcHandlers.get("widget:fit-content")({}, { height: 510 });
   assert.deepEqual(result, { locked: false });
   const after = window.getBounds();
   assert.equal(after.width, before.width);
-  assert.equal(after.height, before.height);
-  assert.equal(window.boundsCalls.length, calls);
+  assert.equal(after.height, 510);
+  assert.equal(loadBounds(dir).height, 510);
+});
+
+test("Win32 keeps the saved home while its display is away", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
+  const primary = {
+    id: 1,
+    bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+    workArea: { x: 0, y: 0, width: 1920, height: 1032 },
+  };
+  const side = {
+    id: 2,
+    bounds: { x: 1920, y: 0, width: 1920, height: 1080 },
+    workArea: { x: 1920, y: 0, width: 1920, height: 1032 },
+  };
+  let displays = [primary, side];
+  const saved = { x: 2400, y: 300, width: 240, height: 140, userSized: true };
+  saveBounds(dir, saved);
+  const harness = await loadMainHarness(idleWin32Server(), {
+    platform: "win32",
+    userDataDir: dir,
+    primaryDisplay: primary,
+    displays: () => displays,
+    setBoundsScale: (next, current) => ((next.x >= 1920) !== (current.x >= 1920) ? 1.25 : 1),
+  });
+  const window = harness.windows[0];
+  assert.equal(window.getBounds().x, 2400);
+
+  displays = [primary];
+  harness.screen.emit("display-removed");
+  assert.ok(window.getBounds().x + 240 <= 1920);
+  // Windows can move the window again on its own. That is not a user move.
+  window.bounds = { ...window.getBounds(), x: 100 };
+  window.emit("move");
+
+  displays = [primary, side];
+  harness.screen.emit("display-added");
+  assert.deepEqual(window.getBounds(), { x: 2400, y: 300, width: 240, height: 140 });
+  harness.app.quit();
+  assert.deepEqual(loadBounds(dir), saved);
+});
+
+test("Win32 a manual move updates the saved home", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tuw-bounds-"));
+  saveBounds(dir, { x: 400, y: 300, width: 240, height: 140, userSized: true });
+  const harness = await loadMainHarness(idleWin32Server(), { platform: "win32", userDataDir: dir });
+  const window = harness.windows[0];
+  window.emit("will-move");
+  window.bounds = { ...window.getBounds(), x: 700, y: 500 };
+  window.emit("move");
+  harness.app.quit();
+  assert.deepEqual(loadBounds(dir), { x: 700, y: 500, width: 240, height: 140, userSized: true });
 });
 
 test("Win32 start keeps the saved size on a 125% display", async () => {
