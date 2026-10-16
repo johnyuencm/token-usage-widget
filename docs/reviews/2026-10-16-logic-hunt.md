@@ -131,5 +131,9 @@ Fix ideas: CLI-1 start from the existing flags and only set detected agents to t
 
 - D0: fixed, commit cc5248d.
 - D1, D2, D3, UI-6: fixed, commit a9865da. Real-app checks on the 3-monitor machine: the default corner stays open, display2 parks right, a monitor drop and return restores the home at 223x143 (not 279x178), and fit shrinks 400 px to 140 px. New: every main.cjs setBounds goes through `placeWindow`, because one setBounds across display scales is wrong (221 -> 278 at 125%, 177 at 100%).
-- A1-A10: fixed in the working tree (agent), not committed yet. Open hand-offs: `tests/usage.test.ts:260-261` expected values for the A7 rounding; `public/app.js` A7 rounding (`fmtPctWhole`) and an A4 "limit hit" marker on the Cursor card.
-- B1-B12 and CLI/UI items: in progress (agents).
+- A1-A10, B1-B10: fixed, commit 2a4c50b.
+  - A7 changed by commander: round like the vendor bills (Cursor 12.87% shows 13%), but never show 100% used below 100, or 0% left above 0. Floor rounding disagreed with the Cursor bill.
+  - B12 SKIPPED: the desktop always passes `USAGE_HOST` (server-launch.cjs:312), so an env override made the server ignore `server.host` and broke `0.0.0.0` LAN binds. A real fix needs the desktop to read the server config.
+  - Side effect: one backend test run wrote an empty `%APPDATA%	oken-usage-widget\.cwd-config-migrated` marker (B6). The server writes the same file on its first start, so it does no harm. Tests now use a temp config.
+- Open hand-off: `public/app.js` A7 rounding (`fmtPctWhole`) and an A4 "limit hit" marker on the Cursor card. Commander does it after the CLI/UI agent finishes.
+- CLI/UI items and B11: in progress (agent).
