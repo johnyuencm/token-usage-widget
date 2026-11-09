@@ -75,10 +75,13 @@ function renderAll(data, { fit = true } = {}) {
     .map((p) => lineHtml(p, opts, maxChars))
     .join("");
 
-  bodyEl.innerHTML = lines || `<div class="line">No providers</div>`;
+  bodyEl.innerHTML =
+    lines || `<div class="line line--dim">No providers are on. Run tuw setup to turn them on.</div>`;
   fixtureEl.hidden = !data.fixture;
-  const t = data.fetchedAt ? new Date(data.fetchedAt).toLocaleTimeString() : "";
-  statusEl.textContent = t ? `↻ ${t}` : "";
+  const t = data.fetchedAt
+    ? new Date(data.fetchedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : "";
+  statusEl.textContent = t ? `Updated ${t}` : "";
   statusEl.classList.remove("error");
   statusEl.title = "";
   if (fit) fitToContent();
@@ -108,9 +111,14 @@ async function refresh() {
   try {
     await loadUsage();
   } catch (err) {
-    statusEl.textContent = `fail`;
+    // Keep the last numbers on screen; the tooltip has the reason.
+    statusEl.textContent = "Update failed. Retrying.";
     statusEl.classList.add("error");
     statusEl.title = String(err.message || err);
+    if (!lastData) {
+      // No numbers yet: say what failed in the body, not only in a tooltip.
+      bodyEl.innerHTML = `<div class="line line--err">Cannot load usage: ${escapeHtml(statusEl.title)}</div>`;
+    }
     fitToContent();
     try {
       const revived = await window.widgetBridge?.ensureServer?.();

@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
   <title>Token Usage</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
   <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png" />
@@ -12,19 +13,21 @@
 </head>
 <body>
   <header class="chrome" style="-webkit-app-region: drag">
-    <span class="chrome-title">usage</span>
+    <span class="chrome-title">Token usage</span>
     <div class="chrome-actions" style="-webkit-app-region: no-drag">
-      <button type="button" id="btn-dash" title="Full dashboard">↗</button>
-      <button type="button" id="btn-hide" title="Hide">–</button>
-      <button type="button" id="btn-quit" title="Quit">×</button>
+      <button type="button" id="btn-dash" title="Open the full dashboard" aria-label="Open the full dashboard">↗</button>
+      <button type="button" id="btn-hide" title="Hide (show it again from the tray icon)" aria-label="Hide the widget">–</button>
+      <button type="button" id="btn-quit" class="quit" title="Quit Token Usage" aria-label="Quit Token Usage">×</button>
     </div>
   </header>
 
-  <main id="body" class="body"></main>
+  <main id="body" class="body">
+    <div class="line line--dim">Loading usage…</div>
+  </main>
 
   <footer class="foot">
-    <span id="status" class="status">…</span>
-    <span id="fixture" class="badge" hidden>FAKE</span>
+    <span id="status" class="status"></span>
+    <span id="fixture" class="badge" hidden title="The server runs with USAGE_FIXTURE. These numbers are not real.">sample data</span>
   </footer>
 
   <script src="/widget.js"></script>
