@@ -32,3 +32,17 @@ Verdict: FAIL. Findings 1, 2 and 4 to 9 are fixed correctly. Test numbers: 280 (
 | 10 | Medium | The empty-card reason came from any unavailable window, also windows that are not drawn. The Claude month window is always unavailable, so a Claude card with all meters off showed the month reason, not the Settings hint. | Take the reason only from windows the settings allow. Show the Settings hint when Settings hid Claude meters. Test added; it fails on the round-2 code. |
 
 Passed in round 2: `aria-busy` guards (2 clicks give 1 load, 2 submits give 1 PUT, focus stays), `fetchServer`, `editedDuringSave`, save-then-load order, the `[hidden]` rule (no hidden element still shows).
+
+## Round 3: head `55e6e78`
+
+Verdict: PASS. Finding 10 is fixed: the reason comes only from allowed windows (`public/app.js:328`), and the Settings hint shows when a Claude display setting is off (`public/app.js:329-330`). The new Claude test fails on the round-2 code and when `hidBySettings` is forced false. No new bug. Test numbers: 281 (278 pass, 0 fail, 3 skipped).
+
+Commits after `55e6e78` change only this file.
+
+## Final state
+
+```
+Round 1 (8c35a27) -> FAIL: 9 findings (2 medium confirmed in the browser)
+Round 2 (6a93cc1) -> FAIL: 8 fixed; finding 10 added by the fix for finding 3
+Round 3 (55e6e78) -> PASS: finding 10 fixed, nothing new
+```
