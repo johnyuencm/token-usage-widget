@@ -302,3 +302,32 @@ test("the dashboard balance shows the amount left large and used-of-total under 
   assert.equal(claude.querySelector(".balance-remaining").textContent, "$5.00 of $50.00 used");
   assert.equal(claude.querySelector(".balance-used").textContent, "");
 });
+
+test("a Claude card with every meter turned off points to Settings, not to the month window reason", async () => {
+  const ui = { refreshIntervalSec: 60, display: { claude: { fiveHour: false, week: false, spend: false } } };
+  const ok = { status: "ok", usedPercent: 10, remainingPercent: 90, resetsAtIso: null };
+  const month = { status: "unavailable", reason: "Claude OAuth usage does not report a monthly window." };
+  const usage = { providers: [{ provider: "claude", label: "Claude", windows: { five_hour: ok, week: ok, month } }], fetchedAt, ui };
+  // A provider card whose .windows starts empty, as in a browser, and records what is added.
+  const appended: any[] = [];
+  const providerTemplate = {
+    content: {
+      cloneNode: () => {
+        const kids = new Map<string, any>();
+        return {
+          querySelector: (sel: string) => {
+            if (!kids.has(sel)) {
+              kids.set(sel, sel === ".windows"
+                ? { childElementCount: 0, classList: { add() {} }, appendChild: (n: any) => appended.push(n) }
+                : stub());
+            }
+            return kids.get(sel);
+          },
+        };
+      },
+    },
+  };
+  runDashboard(async (url) => json(url === "/api/settings" ? { ui } : usage), { "provider-template": providerTemplate });
+  await settle();
+  assert.equal(appended.at(-1).textContent, "No meters to show. Turn some on in Settings.");
+});

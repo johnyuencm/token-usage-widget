@@ -324,11 +324,14 @@ function renderProvider(p) {
     }
     // Never an empty card: give the window's own reason, or say that Settings hid the meters.
     if (!p.error && windowsEl.childElementCount === 0) {
-      const reason = Object.values(p.windows || {}).find((w) => w && w.status !== "ok" && w.reason)?.reason;
+      // Only windows the settings allow; Claude's month window is always "unavailable" with a reason.
+      const reason = windowIds.map((id) => p.windows?.[id]).find((w) => w && w.status !== "ok" && w.reason)?.reason;
+      const d = uiSettings.display.claude;
+      const hidBySettings = p.provider === "claude" && !(d.fiveHour && d.week && d.spend);
       const note = document.createElement("p");
       note.className = "provider-note";
       note.textContent =
-        reason || (p.provider === "claude" ? "No meters to show. Turn some on in Settings." : "No usage data yet.");
+        reason || (hidBySettings ? "No meters to show. Turn some on in Settings." : "No usage data yet.");
       windowsEl.appendChild(note);
     }
   }
