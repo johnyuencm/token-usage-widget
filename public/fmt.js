@@ -34,7 +34,7 @@
     const text = diff < 60000 ? "<1 minute" : parts.join(" ");
 
     const when = formatResetWhen(iso);
-    return when ? `Resets in ${text} · ${when}` : `Resets in ${text}`;
+    return when ? `Resets in ${text} (${when})` : `Resets in ${text}`;
   }
 
   /**

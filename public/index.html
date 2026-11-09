@@ -3,53 +3,40 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
   <title>Token Usage</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
   <script src="/fmt.js"></script>
 </head>
 <body>
-  <div class="aurora" aria-hidden="true">
-    <span class="blob blob-a"></span>
-    <span class="blob blob-b"></span>
-    <span class="blob blob-c"></span>
-  </div>
-
   <header class="site-header">
     <div class="brand">
-      <span class="brand-mark"></span>
-      <div class="brand-text">
-        <h1>Token Usage</h1>
-        <p class="tagline">Multi-harness usage: Codex, Cursor, Claude, OpenRouter, Kimi, Z.AI, Grok</p>
-      </div>
+      <h1>Token Usage</h1>
+      <p class="status" id="status" role="status"></p>
     </div>
-    <div class="header-meta">
-      <nav class="site-nav" aria-label="Primary">
-        <a href="#dashboard" class="site-nav-link site-nav-link--active" data-view="dashboard">Dashboard</a>
-        <a href="#settings" class="site-nav-link" data-view="settings">Settings</a>
+    <div class="header-actions">
+      <span id="fixture-badge" class="badge" hidden title="The server runs with USAGE_FIXTURE. These numbers are not real.">Sample data</span>
+      <nav class="tabs" aria-label="Views">
+        <a href="#dashboard" class="tab" data-view="dashboard" aria-current="page">Dashboard</a>
+        <a href="#settings" class="tab" data-view="settings">Settings</a>
       </nav>
-      <span id="fixture-badge" class="badge badge--ghost" hidden>FIXTURE</span>
-      <span id="refresh-clock" class="refresh-clock">--:--:--</span>
-      <span class="refresh-pulse" id="refresh-pulse" title="Auto-refresh"></span>
+      <button type="button" class="btn" id="refresh-now">Refresh</button>
     </div>
   </header>
 
-  <main class="providers view view--active" id="view-dashboard" data-view="dashboard">
-    <div class="providers-grid" id="providers">
-      <!-- provider columns injected by app.js -->
+  <main class="view" id="view-dashboard" data-view="dashboard" tabindex="-1" aria-label="Dashboard">
+    <div class="providers-grid" id="providers" aria-busy="true">
+      <p class="state state--loading">Loading usage…</p>
     </div>
   </main>
 
-  <main class="settings view" id="view-settings" data-view="settings" hidden>
+  <main class="view" id="view-settings" data-view="settings" tabindex="-1" aria-label="Settings" hidden>
     <form class="settings-panel" id="settings-form">
       <section class="settings-section">
-        <h2>Refresh &amp; polling</h2>
-        <p class="settings-hint">UI refresh is how often the widget/dashboard reload. Provider poll is the minimum gap between upstream API calls (raise Claude to avoid rate limits).</p>
+        <h2>Refresh</h2>
         <label class="settings-field">
-          <span>UI refresh interval</span>
+          <span>Refresh the widget and dashboard every</span>
           <select name="refreshIntervalSec" id="setting-refresh">
             <option value="30">30 seconds</option>
             <option value="60">1 minute</option>
@@ -60,8 +47,8 @@
           </select>
         </label>
         <label class="settings-field">
-          <span>Claude upstream poll</span>
-          <select name="pollClaudeSec" id="setting-poll-claude">
+          <span>Ask Claude for new numbers at most every</span>
+          <select name="pollClaudeSec" id="setting-poll-claude" aria-describedby="hint-poll-claude">
             <option value="60">1 minute</option>
             <option value="120">2 minutes</option>
             <option value="300">5 minutes (recommended)</option>
@@ -69,47 +56,37 @@
             <option value="900">15 minutes</option>
             <option value="1800">30 minutes</option>
           </select>
+          <small class="settings-hint" id="hint-poll-claude">Claude limits how often you can ask. If Claude shows a rate-limit error, choose a longer time.</small>
         </label>
       </section>
 
-      <section class="settings-section">
-        <h2>Claude display</h2>
-        <p class="settings-hint">Choose which meters appear in the widget and dashboard. Enterprise seats often only have spend limits.</p>
-        <div class="settings-checks">
-          <label><input type="checkbox" name="claudeFiveHour" id="setting-claude-5h" /> 5-hour window</label>
-          <label><input type="checkbox" name="claudeWeek" id="setting-claude-week" /> Weekly window</label>
-          <label><input type="checkbox" name="claudeSpend" id="setting-claude-spend" /> Spend limit (USD)</label>
-        </div>
-      </section>
+      <fieldset class="settings-section">
+        <legend>Claude meters</legend>
+        <p class="settings-hint">Choose the Claude meters to show in the widget and the dashboard. Enterprise seats often have only a spend limit.</p>
+        <label class="check"><input type="checkbox" name="claudeFiveHour" id="setting-claude-5h" /> 5-hour window</label>
+        <label class="check"><input type="checkbox" name="claudeWeek" id="setting-claude-week" /> Weekly window</label>
+        <label class="check"><input type="checkbox" name="claudeSpend" id="setting-claude-spend" /> Spend limit (USD)</label>
+      </fieldset>
 
-      <section class="settings-section">
-        <h2>Cursor display</h2>
-        <p class="settings-hint">Pick billing breakdown lines for the compact widget. Dashboard always shows the full card when expanded.</p>
-        <div class="settings-checks">
-          <label><input type="checkbox" name="cursorTotal" id="setting-cursor-total" /> Total usage</label>
-          <label><input type="checkbox" name="cursorAuto" id="setting-cursor-auto" /> First-party models</label>
-          <label><input type="checkbox" name="cursorApi" id="setting-cursor-api" /> API usage</label>
-        </div>
-      </section>
+      <fieldset class="settings-section">
+        <legend>Cursor lines</legend>
+        <p class="settings-hint">Choose the Cursor billing lines to show in the widget and the dashboard.</p>
+        <label class="check"><input type="checkbox" name="cursorTotal" id="setting-cursor-total" /> Total usage</label>
+        <label class="check"><input type="checkbox" name="cursorAuto" id="setting-cursor-auto" /> First-party models</label>
+        <label class="check"><input type="checkbox" name="cursorApi" id="setting-cursor-api" /> API usage</label>
+      </fieldset>
 
       <div class="settings-actions">
-        <button type="submit" class="settings-save">Save settings</button>
-        <span class="settings-status" id="settings-status" aria-live="polite"></span>
+        <button type="submit" class="btn btn--primary" id="settings-save">Save settings</button>
+        <span class="settings-status" id="settings-status" role="status"></span>
       </div>
+      <p class="settings-hint">The app saves these settings to <code data-config-path>config.json</code>. Provider keys stay in that file. To change providers, run <code>tuw setup</code>.</p>
     </form>
   </main>
 
-  <footer class="site-footer">
-    <span id="footer-status">Connecting…</span>
-    <span class="footer-hint" id="footer-hint">Auto-refresh</span>
-  </footer>
-
   <template id="provider-template">
     <section class="provider">
-      <header class="provider-head">
-        <h2 class="provider-title"></h2>
-        <span class="provider-sub"></span>
-      </header>
+      <h2 class="provider-title"></h2>
       <div class="windows"></div>
       <p class="provider-error" hidden></p>
     </section>
@@ -118,39 +95,28 @@
   <template id="window-template">
     <article class="window">
       <header class="window-head">
-        <span class="window-label"></span>
-        <span class="window-reset"></span>
+        <h3 class="window-label"></h3>
+        <p class="window-left"></p>
       </header>
-      <div class="meter">
+      <div class="meter" role="meter" aria-valuemin="0" aria-valuemax="100">
         <div class="meter-fill"></div>
-        <div class="meter-ticks" aria-hidden="true">
-          <span></span><span></span><span></span><span></span>
-        </div>
       </div>
-      <dl class="window-stats">
-        <div class="stat">
-          <dt>Used</dt>
-          <dd class="stat-used"></dd>
-        </div>
-        <div class="stat">
-          <dt>Remaining</dt>
-          <dd class="stat-remaining"></dd>
-        </div>
-        <div class="stat stat--tokens">
-          <dt>Tokens</dt>
-          <dd class="stat-tokens"></dd>
-        </div>
-      </dl>
+      <p class="window-meta">
+        <span class="stat-used"></span>
+        <span class="stat-tokens"></span>
+        <span class="window-reset"></span>
+      </p>
     </article>
   </template>
 
   <template id="balance-template">
     <div class="balance-block">
-      <p class="balance-label"></p>
+      <h3 class="balance-label"></h3>
       <p class="balance-value">
         <span class="balance-remaining"></span>
         <span class="balance-unit"></span>
       </p>
+      <p class="balance-used"></p>
       <p class="balance-reset"></p>
     </div>
   </template>
@@ -160,12 +126,10 @@
       <p class="bill-plan"></p>
       <div class="bill-total">
         <div class="bill-row">
-          <span class="bill-row-label">Total</span>
+          <h3 class="bill-row-label">Total</h3>
           <span class="bill-total-pct"></span>
         </div>
-        <div class="bill-meter">
-          <div class="bill-meter-fill"></div>
-        </div>
+        <div class="meter"><div class="meter-fill"></div></div>
       </div>
       <button type="button" class="bill-summary" aria-expanded="true">
         <span class="bill-summary-text"></span>
@@ -177,9 +141,7 @@
             <span class="bill-row-label">First-party models</span>
             <span class="bill-auto-pct"></span>
           </div>
-          <div class="bill-meter bill-meter--thin">
-            <div class="bill-meter-fill"></div>
-          </div>
+          <div class="meter meter--thin"><div class="meter-fill"></div></div>
           <p class="bill-note bill-auto-note"></p>
         </div>
         <div class="bill-bucket bill-api">
@@ -187,9 +149,7 @@
             <span class="bill-row-label">API</span>
             <span class="bill-api-pct"></span>
           </div>
-          <div class="bill-meter bill-meter--thin">
-            <div class="bill-meter-fill"></div>
-          </div>
+          <div class="meter meter--thin"><div class="meter-fill"></div></div>
           <p class="bill-note bill-api-note"></p>
         </div>
       </div>

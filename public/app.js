@@ -1,7 +1,7 @@
 const WINDOW_META = {
-  five_hour: { label: "5-Hour Window", short: "5h" },
-  week: { label: "Weekly Window", short: "7d" },
-  month: { label: "Monthly Window", short: "30d" },
+  five_hour: { label: "5-hour window", short: "5h" },
+  week: { label: "Weekly window", short: "7d" },
+  month: { label: "Monthly window", short: "30d" },
 };
 
 const DEFAULT_UI = {
@@ -17,12 +17,14 @@ let uiSettings = structuredClone(DEFAULT_UI);
 let refreshTimer = null;
 /** Open/closed state of the Cursor billing details; it outlives each redraw. */
 let cursorBillExpanded = true;
+/** fetchedAt of the last good load, so a failed poll can say how old the shown data is. */
+let lastLoadedAt = null;
+/** The running /api/usage request; a timer tick or a second click joins it. */
+let refreshInFlight = null;
 
 const providersEl = document.getElementById("providers");
-const footerStatus = document.getElementById("footer-status");
-const footerHint = document.getElementById("footer-hint");
-const refreshClock = document.getElementById("refresh-clock");
-const refreshPulse = document.getElementById("refresh-pulse");
+const statusEl = document.getElementById("status");
+const refreshButton = document.getElementById("refresh-now");
 const fixtureBadge = document.getElementById("fixture-badge");
 const providerTemplate = document.getElementById("provider-template");
 const windowTemplate = document.getElementById("window-template");
@@ -30,9 +32,10 @@ const cursorBillTemplate = document.getElementById("cursor-bill-template");
 const balanceTemplate = document.getElementById("balance-template");
 const settingsForm = document.getElementById("settings-form");
 const settingsStatus = document.getElementById("settings-status");
+const settingsSave = document.getElementById("settings-save");
 const viewDashboard = document.getElementById("view-dashboard");
 const viewSettings = document.getElementById("view-settings");
-const navLinks = document.querySelectorAll(".site-nav-link");
+const navLinks = document.querySelectorAll(".tabs .tab");
 
 function fmtPct(value) {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
@@ -95,18 +98,34 @@ function claudeWindowOrder() {
 }
 
 function formatRefreshHint(sec) {
-  if (sec < 60) return `${sec}s`;
-  if (sec % 60 === 0) return `${sec / 60}m`;
-  return `${sec}s`;
+  const plural = (n, unit) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  return sec >= 60 && sec % 60 === 0 ? plural(sec / 60, "minute") : plural(sec, "second");
 }
 
 function setRefreshInterval(sec) {
   if (refreshTimer) clearInterval(refreshTimer);
   const ms = Math.max(30, sec) * 1000;
   refreshTimer = setInterval(refresh, ms);
-  const label = formatRefreshHint(sec);
-  footerHint.textContent = `Auto-refresh ${label}`;
-  refreshPulse.title = `Auto-refresh every ${label}`;
+}
+
+function fmtTime(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/** One status line for the whole page: freshness, or what failed and what to do. */
+function setStatus(text, tone = "") {
+  statusEl.textContent = text;
+  statusEl.dataset.tone = tone;
+}
+
+/** A first-load state (empty or error) in place of the provider grid. */
+function showGridState(text, tone = "") {
+  providersEl.innerHTML = "";
+  const p = document.createElement("p");
+  p.className = tone ? `state state--${tone}` : "state";
+  p.textContent = text;
+  providersEl.appendChild(p);
 }
 
 function renderWindow(parent, winId, win, providerId) {
@@ -120,71 +139,59 @@ function renderWindow(parent, winId, win, providerId) {
   node.querySelector(".window-reset").textContent =
     win.status === "ok" ? fmtReset(win.resetsAtIso) : win.reason || "";
 
+  const meter = node.querySelector(".meter");
   const fill = node.querySelector(".meter-fill");
   const used = win.status === "ok" ? win.usedPercent : null;
   fill.style.width = used !== null ? `${Math.min(100, Math.max(0, used))}%` : "0%";
   fill.dataset.tone = toneFor(used, win.status);
+  article.dataset.tone = fill.dataset.tone;
+  meter.setAttribute("aria-label", `${meta.label} used`);
+  if (used !== null) meter.setAttribute("aria-valuenow", String(Math.round(used)));
 
+  // The share left is the number people act on, so it is the large one.
   const pctFmt = providerId === "cursor" ? fmtPctWhole : fmtPct;
-  node.querySelector(".stat-used").textContent =
-    win.status === "ok" ? pctFmt(win.usedPercent) : "Unavailable";
-  node.querySelector(".stat-remaining").textContent =
-    win.status === "ok" && win.remainingPercent !== null && win.remainingPercent !== undefined
-      ? pctFmt(win.remainingPercent, "remaining")
-      : win.status === "ok"
-        ? "uncapped"
-        : "Unavailable";
+  const hasLeft = win.remainingPercent !== null && win.remainingPercent !== undefined;
+  node.querySelector(".window-left").textContent = hasLeft
+    ? `${pctFmt(win.remainingPercent, "remaining")} left`
+    : "No cap";
+  node.querySelector(".stat-used").textContent = `${pctFmt(win.usedPercent)} used`;
   node.querySelector(".stat-tokens").textContent =
-    win.usedTokens !== null && win.usedTokens !== undefined
-      ? fmtTokens(win.usedTokens)
-      : "—";
+    win.usedTokens !== null && win.usedTokens !== undefined ? `${fmtTokens(win.usedTokens)} tokens` : "";
 
   parent.appendChild(node);
 }
 
-function fmtBalanceRemaining(balance) {
-  if (balance.currency === "USD") {
-    const used = balance.used;
-    const total = balance.total;
-    if (
-      used !== null &&
-      used !== undefined &&
-      !Number.isNaN(Number(used)) &&
-      total !== null &&
-      total !== undefined &&
-      !Number.isNaN(Number(total))
-    ) {
-      return `$${Number(used).toFixed(2)} of $${Number(total).toFixed(2)}`;
-    }
-  }
-  if (balance.remaining === null || balance.remaining === undefined || Number.isNaN(Number(balance.remaining))) {
-    return "—";
-  }
-  const n = Number(balance.remaining);
-  if (balance.currency === "USD") return `$${n.toFixed(2)}`;
-  return String(Math.round(n));
+const isNum = (v) => v !== null && v !== undefined && !Number.isNaN(Number(v));
+
+function fmtAmount(v, currency) {
+  return currency === "USD" ? `$${Number(v).toFixed(2)}` : String(Math.round(Number(v)));
 }
 
+/**
+ * The amount left is the large number, as in the widget ("$12.34 left").
+ * "$7.66 of $20.00 used" goes under it. Without a remaining amount, the used line is the large one.
+ */
 function renderBalance(parent, balance) {
   const node = balanceTemplate.content.cloneNode(true);
+  const cur = balance.currency;
   node.querySelector(".balance-label").textContent = balance.label || "Balance";
-  node.querySelector(".balance-remaining").textContent = fmtBalanceRemaining(balance);
+  const usedOfTotal =
+    cur === "USD" && isNum(balance.used) && isNum(balance.total)
+      ? `${fmtAmount(balance.used, cur)} of ${fmtAmount(balance.total, cur)} used`
+      : "";
+  const value = node.querySelector(".balance-remaining");
   const unit = node.querySelector(".balance-unit");
-  if (balance.currency === "USD") {
-    const used = balance.used;
-    const total = balance.total;
-    if (used !== null && used !== undefined && total !== null && total !== undefined) {
-      unit.textContent = "";
-    } else {
-      unit.textContent = "left";
-    }
-  } else if (balance.currency === "credits") {
-    unit.textContent = "credits left";
+  const detail = node.querySelector(".balance-used");
+  if (isNum(balance.remaining)) {
+    value.textContent = fmtAmount(balance.remaining, cur);
+    unit.textContent = cur === "credits" ? "credits left" : "left";
+    detail.textContent = usedOfTotal;
   } else {
+    value.textContent = usedOfTotal || "—";
     unit.textContent = "";
+    detail.textContent = "";
   }
-  const resetEl = node.querySelector(".balance-reset");
-  resetEl.textContent = balance.resetsAtIso ? fmtReset(balance.resetsAtIso) : "";
+  node.querySelector(".balance-reset").textContent = balance.resetsAtIso ? fmtReset(balance.resetsAtIso) : "";
   parent.appendChild(node);
 }
 
@@ -193,13 +200,12 @@ function renderCursorBilling(parent, billing, error, display) {
   const card = node.querySelector(".cursor-bill");
   const show = display ?? uiSettings.display.cursor;
 
+  node.querySelector(".bill-plan").textContent = billing.planLabel || "Included in plan";
   if (show.total) {
-    node.querySelector(".bill-plan").textContent = billing.planLabel || "Included in plan";
     node.querySelector(".bill-total-pct").textContent = fmtPctWhole(billing.totalPercentUsed);
     setBillMeter(node.querySelector(".bill-total"), billing.totalPercentUsed);
   } else {
     node.querySelector(".bill-total").hidden = true;
-    node.querySelector(".bill-plan").textContent = billing.planLabel || "Included in plan";
   }
 
   const auto = billing.autoPercentUsed;
@@ -274,7 +280,7 @@ function renderCursorBilling(parent, billing, error, display) {
 }
 
 function setBillMeter(root, usedPercent) {
-  const fill = root.querySelector(".bill-meter-fill");
+  const fill = root.querySelector(".meter-fill");
   const pct = usedPercent === null || usedPercent === undefined ? null : Math.min(100, Math.max(0, usedPercent));
   fill.style.width = pct !== null ? `${pct}%` : "0%";
   fill.dataset.tone = billTone(pct);
@@ -283,8 +289,6 @@ function setBillMeter(root, usedPercent) {
 function renderProvider(p) {
   const node = providerTemplate.content.cloneNode(true);
   node.querySelector(".provider-title").textContent = p.label;
-  const sub = p.error ? "error" : "live";
-  node.querySelector(".provider-sub").textContent = sub;
   const errEl = node.querySelector(".provider-error");
   const windowsEl = node.querySelector(".windows");
 
@@ -317,6 +321,13 @@ function renderProvider(p) {
         renderWindow(windowsEl, winId, win, p.provider);
       }
     }
+    // Settings can hide every meter; say so instead of an empty card.
+    if (!p.error && windowsEl.childElementCount === 0) {
+      const note = document.createElement("p");
+      note.className = "provider-note";
+      note.textContent = "No meters to show. Turn some on in Settings.";
+      windowsEl.appendChild(note);
+    }
   }
   providersEl.appendChild(node);
 }
@@ -330,30 +341,61 @@ function renderAll(data) {
     // overwrite unsaved edits. loadSettings and saveSettings fill it otherwise.
     if (!settingsFormFilled) populateSettingsForm();
   }
+  // A redraw replaces the Cursor toggle; keep keyboard focus on it.
+  const hadToggleFocus = document.activeElement?.classList?.contains("bill-summary") === true;
   providersEl.innerHTML = "";
-  for (const p of data.providers) renderProvider(p);
+  providersEl.removeAttribute("aria-busy");
+  const providers = data.providers || [];
+  for (const p of providers) renderProvider(p);
+  if (!providers.length) {
+    showGridState("No providers are on. Run tuw setup in a terminal to turn on the agents on this computer.");
+  }
+  if (hadToggleFocus) providersEl.querySelector(".bill-summary")?.focus();
   fixtureBadge.hidden = !data.fixture;
 }
 
-function updateClock() {
-  const now = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  refreshClock.textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+/** Plain words for a failed request: what happened and what to do. */
+function loadErrorText(err) {
+  if (err instanceof TypeError) {
+    return "The usage server does not answer. Start it with tuw start, or restart the widget.";
+  }
+  return String(err?.message || err);
 }
 
-async function refresh() {
-  try {
-    const res = await fetch("/api/usage", { cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    renderAll(data);
-    footerStatus.textContent = `Last updated ${new Date(data.fetchedAt).toLocaleTimeString()}`;
-    document.querySelector(".site-footer").classList.remove("error");
-  } catch (err) {
-    footerStatus.textContent = `Failed to load: ${err.message}`;
-    document.querySelector(".site-footer").classList.add("error");
+async function loadUsage() {
+  const res = await fetch("/api/usage", { cache: "no-store" });
+  if (!res.ok) {
+    // A bad config.json comes back as a 500 with its message; show that, not the code.
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error || `The usage server answered HTTP ${res.status}.`);
   }
-  updateClock();
+  const data = await res.json();
+  renderAll(data);
+  lastLoadedAt = data.fetchedAt || new Date().toISOString();
+  setStatus(`Updated ${fmtTime(lastLoadedAt)}. Refreshes every ${formatRefreshHint(uiSettings.refreshIntervalSec)}.`);
+}
+
+/** Single-flight: a timer tick or a second click during a load joins that load. */
+function refresh() {
+  if (refreshInFlight) return refreshInFlight;
+  refreshButton.disabled = true;
+  refreshButton.setAttribute("aria-busy", "true");
+  refreshInFlight = loadUsage()
+    .catch((err) => {
+      const reason = loadErrorText(err);
+      if (lastLoadedAt) {
+        setStatus(`Could not refresh at ${fmtTime()}. ${reason} Showing data from ${fmtTime(lastLoadedAt)}.`, "error");
+      } else {
+        setStatus(""); // The grid shows the one message for this problem.
+        showGridState(`${reason} Then select Refresh.`, "error");
+      }
+    })
+    .finally(() => {
+      refreshInFlight = null;
+      refreshButton.disabled = false;
+      refreshButton.removeAttribute("aria-busy");
+    });
+  return refreshInFlight;
 }
 
 let settingsFormFilled = false;
@@ -427,9 +469,19 @@ function readSettingsFromForm() {
   };
 }
 
+function setSettingsStatus(text, tone = "") {
+  settingsStatus.textContent = text;
+  settingsStatus.dataset.tone = tone;
+}
+
+let saving = false;
+
 async function saveSettings(ev) {
   ev.preventDefault();
-  settingsStatus.textContent = "Saving…";
+  if (saving) return;
+  saving = true;
+  settingsSave.disabled = true;
+  setSettingsStatus("Saving…");
   try {
     const ui = readSettingsFromForm();
     const res = await fetch("/api/settings", {
@@ -437,26 +489,29 @@ async function saveSettings(ev) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ui }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `The server answered HTTP ${res.status}.`);
     uiSettings = mergeUi(data.ui);
     populateSettingsForm();
     setRefreshInterval(uiSettings.refreshIntervalSec);
-    settingsStatus.textContent = "Saved";
+    setSettingsStatus("Settings saved.", "ok");
     await refresh();
   } catch (err) {
-    settingsStatus.textContent = `Save failed: ${err.message}`;
+    // The form keeps the edits, so a retry is one click.
+    setSettingsStatus(`Could not save. ${loadErrorText(err)} Your changes are still here. Try again.`, "error");
+  } finally {
+    saving = false;
+    settingsSave.disabled = false;
   }
 }
 
 function showView(name) {
   const dashboard = name !== "settings";
   viewDashboard.hidden = !dashboard;
-  viewDashboard.classList.toggle("view--active", dashboard);
   viewSettings.hidden = dashboard;
-  viewSettings.classList.toggle("view--active", !dashboard);
   for (const link of navLinks) {
-    link.classList.toggle("site-nav-link--active", link.dataset.view === name);
+    if (link.dataset.view === name) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
   }
 }
 
@@ -473,9 +528,20 @@ async function start() {
   }
   syncViewFromHash();
   window.addEventListener("hashchange", syncViewFromHash);
+  // Dashboard and Settings are tabs of one page: replace the history entry, so
+  // Back leaves the page and does not walk every tab switch.
+  for (const link of navLinks) {
+    link.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      if (location.hash !== link.hash) location.replace(link.hash);
+      syncViewFromHash();
+      (link.dataset.view === "settings" ? viewSettings : viewDashboard).focus();
+    });
+  }
   settingsForm?.addEventListener("submit", saveSettings);
+  settingsForm?.addEventListener("input", () => setSettingsStatus("Unsaved changes."));
+  refreshButton.addEventListener("click", () => refresh());
   refresh();
-  setInterval(updateClock, 1000);
 }
 
 start();
