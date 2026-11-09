@@ -122,6 +122,7 @@ function setStatus(text, tone = "") {
 /** A first-load state (empty or error) in place of the provider grid. */
 function showGridState(text, tone = "") {
   providersEl.innerHTML = "";
+  providersEl.removeAttribute("aria-busy");
   const p = document.createElement("p");
   p.className = tone ? `state state--${tone}` : "state";
   p.textContent = text;
@@ -321,11 +322,13 @@ function renderProvider(p) {
         renderWindow(windowsEl, winId, win, p.provider);
       }
     }
-    // Settings can hide every meter; say so instead of an empty card.
+    // Never an empty card: give the window's own reason, or say that Settings hid the meters.
     if (!p.error && windowsEl.childElementCount === 0) {
+      const reason = Object.values(p.windows || {}).find((w) => w && w.status !== "ok" && w.reason)?.reason;
       const note = document.createElement("p");
       note.className = "provider-note";
-      note.textContent = "No meters to show. Turn some on in Settings.";
+      note.textContent =
+        reason || (p.provider === "claude" ? "No meters to show. Turn some on in Settings." : "No usage data yet.");
       windowsEl.appendChild(note);
     }
   }
@@ -356,14 +359,20 @@ function renderAll(data) {
 
 /** Plain words for a failed request: what happened and what to do. */
 function loadErrorText(err) {
-  if (err instanceof TypeError) {
-    return "The usage server does not answer. Start it with tuw start, or restart the widget.";
-  }
   return String(err?.message || err);
 }
 
+/** fetch, but a network failure (not a code bug later on) says what to do. */
+async function fetchServer(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch {
+    throw new Error("The usage server does not answer. Start it with tuw start, or restart the widget.");
+  }
+}
+
 async function loadUsage() {
-  const res = await fetch("/api/usage", { cache: "no-store" });
+  const res = await fetchServer("/api/usage", { cache: "no-store" });
   if (!res.ok) {
     // A bad config.json comes back as a 500 with its message; show that, not the code.
     const body = await res.json().catch(() => null);
@@ -378,7 +387,7 @@ async function loadUsage() {
 /** Single-flight: a timer tick or a second click during a load joins that load. */
 function refresh() {
   if (refreshInFlight) return refreshInFlight;
-  refreshButton.disabled = true;
+  // aria-busy, not disabled: disabling the focused button would drop keyboard focus.
   refreshButton.setAttribute("aria-busy", "true");
   refreshInFlight = loadUsage()
     .catch((err) => {
@@ -392,7 +401,6 @@ function refresh() {
     })
     .finally(() => {
       refreshInFlight = null;
-      refreshButton.disabled = false;
       refreshButton.removeAttribute("aria-busy");
     });
   return refreshInFlight;
@@ -475,16 +483,19 @@ function setSettingsStatus(text, tone = "") {
 }
 
 let saving = false;
+/** Set when the person edits the form while a save runs; those edits are not saved yet. */
+let editedDuringSave = false;
 
 async function saveSettings(ev) {
   ev.preventDefault();
   if (saving) return;
   saving = true;
-  settingsSave.disabled = true;
+  editedDuringSave = false;
+  settingsSave.setAttribute("aria-busy", "true");
   setSettingsStatus("Saving…");
   try {
     const ui = readSettingsFromForm();
-    const res = await fetch("/api/settings", {
+    const res = await fetchServer("/api/settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ui }),
@@ -492,16 +503,22 @@ async function saveSettings(ev) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `The server answered HTTP ${res.status}.`);
     uiSettings = mergeUi(data.ui);
-    populateSettingsForm();
+    // Do not write over edits made during the save.
+    if (!editedDuringSave) populateSettingsForm();
     setRefreshInterval(uiSettings.refreshIntervalSec);
-    setSettingsStatus("Settings saved.", "ok");
+    setSettingsStatus(
+      editedDuringSave ? "Settings saved. Your newer changes are not saved yet." : "Settings saved.",
+      editedDuringSave ? "" : "ok",
+    );
+    // A load that started before the save carries the old settings; wait for it, then load again.
+    if (refreshInFlight) await refreshInFlight;
     await refresh();
   } catch (err) {
     // The form keeps the edits, so a retry is one click.
     setSettingsStatus(`Could not save. ${loadErrorText(err)} Your changes are still here. Try again.`, "error");
   } finally {
     saving = false;
-    settingsSave.disabled = false;
+    settingsSave.removeAttribute("aria-busy");
   }
 }
 
@@ -539,7 +556,10 @@ async function start() {
     });
   }
   settingsForm?.addEventListener("submit", saveSettings);
-  settingsForm?.addEventListener("input", () => setSettingsStatus("Unsaved changes."));
+  settingsForm?.addEventListener("input", () => {
+    if (saving) editedDuringSave = true;
+    else setSettingsStatus("Unsaved changes.");
+  });
   refreshButton.addEventListener("click", () => refresh());
   refresh();
 }

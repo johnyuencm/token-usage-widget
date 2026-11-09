@@ -40,6 +40,11 @@
   box-sizing: border-box;
 }
 
+/* Author display rules (flex, grid) must not beat the hidden attribute. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -164,16 +169,14 @@ main:focus {
   transition: background-color var(--fast), opacity var(--fast);
 }
 
-.btn:hover:not(:disabled) {
+.btn:hover:not([aria-busy="true"]) {
   background: var(--surface);
 }
 
-.btn:disabled {
-  cursor: progress;
-}
-
-/* Dim a busy button only after 300 ms, so a fast local answer does not flash. */
+/* Busy, not disabled: the button keeps keyboard focus. Script ignores clicks while busy.
+   Dim only after 300 ms, so a fast local answer does not flash. */
 .btn[aria-busy="true"] {
+  cursor: progress;
   opacity: 0.55;
   transition-delay: 300ms;
 }
@@ -185,12 +188,8 @@ main:focus {
   font-weight: 600;
 }
 
-.btn--primary:hover:not(:disabled) {
+.btn--primary:hover:not([aria-busy="true"]) {
   background: #5fdccd;
-}
-
-.btn--primary:disabled {
-  opacity: 0.6;
 }
 
 /* Views */
@@ -486,7 +485,6 @@ main:focus {
   gap: var(--s-4);
   padding-left: var(--s-3);
   border-left: 1px solid var(--line);
-  animation: view-in var(--fast) ease-out;
 }
 
 .bill-note {

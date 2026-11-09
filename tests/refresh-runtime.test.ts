@@ -262,3 +262,43 @@ test("the dashboard Cursor card says a hit limit first and never shows full or e
   assert.equal(card.querySelector(".bill-remaining").textContent, "1% remaining this cycle");
 });
 /* eslint-enable @typescript-eslint/no-explicit-any */
+
+test("a dashboard refresh during a running load joins it: one request (single-flight)", async () => {
+  const ui = { refreshIntervalSec: 60 };
+  let usageCalls = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const run = runDashboard(async (url) => {
+    if (url === "/api/settings") return json({ ui });
+    usageCalls += 1;
+    await gate;
+    return json({ providers: [], fetchedAt, ui });
+  });
+  await settle();
+  const before = usageCalls;
+  const a = run.poll();
+  const b = run.poll();
+  release();
+  await Promise.all([a, b]);
+  assert.equal(usageCalls, before, "both ticks join the first load, which is still running");
+});
+
+test("the dashboard balance shows the amount left large and used-of-total under it", async () => {
+  const ui = { refreshIntervalSec: 60 };
+  const usage = {
+    providers: [
+      { provider: "openrouter", label: "OpenRouter", balance: { currency: "USD", remaining: 12.34, used: 7.66, total: 20, label: "Credits remaining" } },
+      { provider: "claude", label: "Claude", balance: { currency: "USD", remaining: null, used: 5, total: 50, label: "Spend limit" } },
+    ],
+    fetchedAt,
+    ui,
+  };
+  const run = runDashboard(async (url) => json(url === "/api/settings" ? { ui } : usage));
+  await settle();
+  const [openrouter, claude] = run.elements.get("balance-template").content.clones.slice(-2);
+  assert.equal(openrouter.querySelector(".balance-remaining").textContent, "$12.34");
+  assert.equal(openrouter.querySelector(".balance-unit").textContent, "left");
+  assert.equal(openrouter.querySelector(".balance-used").textContent, "$7.66 of $20.00 used");
+  assert.equal(claude.querySelector(".balance-remaining").textContent, "$5.00 of $50.00 used");
+  assert.equal(claude.querySelector(".balance-used").textContent, "");
+});
