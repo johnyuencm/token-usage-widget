@@ -19,9 +19,9 @@ test("formatReset includes relative countdown and absolute local time", () => {
   const now = Date.parse("2026-07-19T12:00:00.000Z");
   const iso = new Date(now + (2 * 3600 + 15 * 60) * 1000).toISOString();
   const out = formatReset(iso, now);
-  assert.match(out, /^Resets in 2 hours 15 minutes · /);
-  // Absolute portion is locale-dependent; just require a non-empty suffix after the dot.
-  const abs = out.split(" · ")[1];
+  assert.match(out, /^Resets in 2 hours 15 minutes \(/);
+  // Absolute portion is locale-dependent; just require a non-empty part in the parentheses.
+  const abs = out.split(" (")[1];
   assert.ok(abs && abs.length >= 4);
 });
 
@@ -29,7 +29,7 @@ test("formatReset days path omits minutes", () => {
   const now = Date.parse("2026-07-19T12:00:00.000Z");
   const iso = new Date(now + (2 * 24 * 3600 + 3 * 3600) * 1000).toISOString();
   const out = formatReset(iso, now);
-  assert.match(out, /^Resets in 2 days 3 hours · /);
+  assert.match(out, /^Resets in 2 days 3 hours \(/);
   assert.doesNotMatch(out, /minute/);
 });
 
@@ -60,7 +60,7 @@ test("formatResetWhen returns locale absolute time, not ISO", () => {
 
 test("formatReset says <1 minute and omits zero parts", () => {
   const now = Date.parse("2026-07-19T12:00:00.000Z");
-  const at = (ms) => formatReset(new Date(now + ms).toISOString(), now).split(" · ")[0];
+  const at = (ms) => formatReset(new Date(now + ms).toISOString(), now).split(" (")[0];
   assert.equal(at(20_000), "Resets in <1 minute");
   assert.equal(at(59_999), "Resets in <1 minute");
   assert.equal(at(90_000), "Resets in 2 minutes");

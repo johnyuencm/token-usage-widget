@@ -1,8 +1,9 @@
 :root {
-  --bg: #0a161c;
+  /* Same as the Electron window backgroundColor, so the first paint does not flash. */
+  --bg: #04141c;
   --ink: #d8eef0;
   --dim: #7a9aa3;
-  --faint: #54707a;
+  --faint: #7d9ba3; /* 6.3:1 on --bg; the old #54707a was 3.5:1 */
   --line: rgba(120, 200, 210, 0.14);
   --danger: #ff6b8b;
   --warn: #ffb86b;
@@ -34,15 +35,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 6px 3px 8px;
+  padding: 2px 4px 2px 8px;
   border-bottom: 1px solid var(--line);
 }
 
 .chrome-title {
   color: var(--faint);
   font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .chrome-actions {
@@ -57,8 +56,9 @@ body {
   font: inherit;
   font-size: 12px;
   line-height: 1;
-  width: 18px;
-  height: 18px;
+  /* 24 px: the WCAG 2.2 minimum target. 44 px would double this corner window's chrome. */
+  width: 24px;
+  height: 24px;
   padding: 0;
   cursor: pointer;
   border-radius: 3px;
@@ -66,7 +66,21 @@ body {
 
 .chrome-actions button:hover {
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Quit closes the app; keep it apart from Hide so a near miss does not quit. */
+.chrome-actions .quit {
+  margin-left: 6px;
+}
+
+.chrome-actions .quit:hover {
+  color: var(--danger);
+}
+
+button:focus-visible {
+  outline: 2px solid #3ccfbe;
+  outline-offset: -2px;
 }
 
 .body {
@@ -85,6 +99,7 @@ body {
 }
 
 .line--err { color: var(--danger); }
+.line--dim { color: var(--dim); }
 
 html.user-sized,
 html.user-sized body {
@@ -115,6 +130,5 @@ html.user-sized .body {
 
 .badge {
   color: var(--warn);
-  font-size: 9px;
-  letter-spacing: 0.06em;
+  font-size: 10px;
 }
